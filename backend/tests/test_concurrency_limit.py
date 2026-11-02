@@ -739,14 +739,14 @@ def test_an_unknown_bucket_blows_up_at_assembly_time():
 def test_the_concurrency_buckets_are_named_after_the_endpoint_paths():
     """桶名沿用「被限的那个端点路径」。
 
-    为什么：不写 `parse` 那种短名——额度种类在 `database.QUOTA_KINDS`
+    为什么：不写 `parse` 那种短名——额度种类在 `quota_kinds.QUOTA_KINDS`
     里只有一处枚举，别处再写一遍会破坏那条结构守卫。
     """
-    import database
+    import quota_kinds
 
     for bucket in ratelimit.CONCURRENCY_BUCKETS:
         assert bucket.startswith("/api/"), f"桶名 {bucket} 不是端点路径"
-    assert not (set(ratelimit.CONCURRENCY_BUCKETS) & set(database.QUOTA_KINDS))
+    assert not (set(ratelimit.CONCURRENCY_BUCKETS) & set(quota_kinds.QUOTA_KINDS))
 
 
 def test_the_concurrency_gate_adds_no_new_dependency():

@@ -652,16 +652,10 @@ function applyQuotaEvent(d: QuotaPayload) {
     byokNotice.value = true
     return
   }
-  // SSE 的 quota 事件带完整的两个额度，整体替换而不是只取顶层字段——
-  // 只留 remaining/limit 会把 parse/chat 丢掉，界面退回单数字。
-  quotaInfo.value = {
-    logged_in: true,
-    unlimited: !!d.unlimited,
-    remaining: d.remaining,
-    limit: d.limit,
-    parse: d.parse ?? null,
-    chat: d.chat ?? null,
-  }
+  // 整体展开事件，而不是逐项挑字段：槽位与中文名（labels）都由服务端给
+  // （ADR 0033），这里不认种类名——只挑顶层 remaining/limit 会把按种类的
+  // 数字丢掉，界面退回单数字。
+  quotaInfo.value = { ...d, logged_in: true, unlimited: !!d.unlimited }
 }
 
 // 进行中的流句柄，用于用户主动停止

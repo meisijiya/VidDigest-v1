@@ -45,7 +45,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, create_model
 
 import model_catalog
 from auth import hash_password, require_admin, validate_email, validate_password
@@ -68,12 +68,12 @@ from database import (
     list_admin_community,
     list_admin_users,
     list_invite_codes,
-    QUOTA_KINDS,
     revoke_invite_code,
     set_user_admin,
     set_user_quota_override,
     update_video_tags,
 )
+from quota_kinds import QUOTA_KINDS
 from tags import MAX_TAGS, VOCABULARY_GROUPS, validate_tags
 
 logger = logging.getLogger("admin_api")
@@ -103,13 +103,9 @@ class QuotaValueError(ValueError):
 #: 额度种类 → 请求体 / 响应体里那个字段的名字（工单 #38）。
 #:
 #: **这是一条命名约定，不是常量里的数据**：`QUOTA_KINDS` 只给列名，给不出
-#: 「对外叫什么」。收口时最容易犯的错是把它当噪声删掉，于是新增一种额度
-#: 时这一层无人提醒。提成具名函数是为了让它**有唯一的定义处**——
-#: 请求体侧（`QuotaUpdateRequest` 声明、`admin_set_quota` 读）与响应体侧
+#: 「对外叫什么」。提成具名函数是为了让它**有唯一的定义处**——请求体侧
+#: （`QuotaUpdateRequest` 的字段、`admin_set_quota` 读）与响应体侧
 #: （`database._admin_user_item` 写）都从这一个名字派生。
-#:
-#: 守卫钉的是「`QuotaUpdateRequest` 声明的字段集 == 本函数在全部种类上的取值」，
-#: 所以新增种类时漏声明 pydantic 字段（它会**静默丢弃**未声明的键）会红。
 def quota_field_name(kind: str) -> str:
     """额度种类 → 线上协议里的字段名，如 ``parse`` → ``parse_limit``。"""
     return f"{kind}_limit"
@@ -145,28 +141,26 @@ def normalize_quota_value(raw: Any, field: str) -> int | None:
 
 # ── 请求体 ──────────────────────────────────────────────────
 
-class QuotaUpdateRequest(BaseModel):
-    """改单人额度的请求体。
-
-    两个字段都声明成 ``Any``：声明成 ``int | None`` 的话，非法值会由
-    pydantic 变成 **422**，而契约要求的是 **400**——「参数不合法」与
-    「请求体结构不对」是两种不同的客户端错误，不该混成一个码。
-    值域判定交给 normalize_quota_value，那才是可单测的纯函数。
-
-    **字段缺省 ≠ 传 null**：
-      - 缺省（这个 key 压根没出现）→ 不动这一项，只改传了的那项
-      - 显式 null → 清除覆盖，回落全局
-    两者混为一谈的话，一次只想改对话额度的请求会把解析额度静默清掉。
-
-    ⚠️ **每种额度一个字段，声明必须与 `QUOTA_KINDS` 同步**（工单 #38）。
-    pydantic 静默丢弃未声明的键，所以新增一种额度而忘了在这里加字段时，
-    管理员传了也改不动，且一路 200 成功返回。守卫见
-    `tests/test_quota_kinds_single_source.py`，它会指名缺哪个字段。
-    字段名由 `quota_field_name` 派生（`parse` → `parse_limit`）。
-    """
-
-    parse_limit: Any = None
-    chat_limit: Any = None
+#: 改单人额度的请求体。字段由注册表生成（ADR 0033），一种额度一个字段。
+#:
+#: 每个字段都声明成 ``Any`` 且缺省 ``None``：声明成 ``int | None`` 的话，
+#: 非法值会由 pydantic 变成 **422**，而契约要求的是 **400**——「参数不合法」
+#: 与「请求体结构不对」是两种不同的客户端错误，不该混成一个码。值域判定
+#: 交给 `normalize_quota_value`，那才是可单测的纯函数。
+#:
+#: **字段缺省 ≠ 传 null**：
+#:   - 缺省（这个 key 压根没出现）→ 不动这一项，只改传了的那项
+#:   - 显式 null → 清除覆盖，回落全局
+#: 两者混为一谈的话，一次只想改对话额度的请求会把解析额度静默清掉。
+#:
+#: 未声明的键仍被**静默丢弃**（pydantic 默认 ``extra="ignore"``）：管理员
+#: 传了一个不存在的额度名，请求照样 200 而什么都不改。这是既有协议行为，
+#: 由 `tests/test_quota_kinds_single_source.py` 钉着。
+QuotaUpdateRequest = create_model(
+    "QuotaUpdateRequest",
+    __doc__="改单人额度的请求体。字段由 `quota_kinds.QUOTA_KINDS` 生成。",
+    **{quota_field_name(kind): (Any, None) for kind in QUOTA_KINDS},
+)
 
 
 # ── 模型清单（工单 #13）─────────────────────────────────────
@@ -292,14 +286,8 @@ async def admin_set_quota(
     # 字段名（parse_limit）在这里映射成额度种类（parse）：数据层那套
     # QUOTA_KINDS 按种类索引，两种命名混过一次，症状是数据层抛
     # 「未知的额度类型 'parse_limit'」——只有真跑起来才看得见的错。
-    # 名字由 quota_field_name 派生，不再手写（工单 #38）。
-    #
-    # ⚠️ 循环遍历 `QUOTA_KINDS`（原来硬写 ("parse", "chat")），但**光遍历不够**：
-    # pydantic 会把 `QuotaUpdateRequest` 没声明的键**静默丢弃**，所以新增一种
-    # 额度而忘了加字段声明时，这里遍历到了那个 kind、supplied 里却压根没有它，
-    # 结果是「改不了且不报错」——与收口前一模一样的症状，只是挪了位置。
-    # 那一层由 tests/test_quota_kinds_single_source.py 守着（它比对本函数在
-    # 全部种类上的取值与模型字段集）。
+    # 名字由 quota_field_name 派生，请求体的字段也由注册表生成（ADR 0033），
+    # 所以「声明了却没遍历到」这种错位在结构上不存在了。
     supplied = payload.model_dump(exclude_unset=True)
     try:
         overrides = {}

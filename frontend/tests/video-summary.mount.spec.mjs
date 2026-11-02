@@ -116,6 +116,7 @@ async function mountSummary(props = {}) {
   })
   fetchQuota.mockResolvedValue({
     logged_in: true,
+    labels: { parse: '解析', chat: '追问' },
     parse: { remaining: 3, limit: 3 },
     chat: { remaining: 10, limit: 10 },
   })
@@ -278,6 +279,7 @@ describe('VideoSummary 挂载 · 接口契约', () => {
     summarizeCb.onQuota({
       remaining: 1,
       limit: 3,
+      labels: { parse: '解析', chat: '追问' },
       parse: { remaining: 2, limit: 3 },
       chat: { remaining: 7, limit: 10 },
     })
@@ -409,6 +411,7 @@ describe('VideoSummary 挂载 · byok 额度提示', () => {
     summarizeCb.onQuota({
       remaining: 2,
       limit: 3,
+      labels: { parse: '解析', chat: '追问' },
       parse: { remaining: 1, limit: 3 },
       chat: { remaining: 9, limit: 10 },
     })
@@ -425,6 +428,7 @@ describe('VideoSummary 挂载 · byok 额度提示', () => {
     summarizeCb.onQuota({
       remaining: 1,
       limit: 3,
+      labels: { parse: '解析', chat: '追问' },
       parse: { remaining: 0, limit: 3 },
       chat: { remaining: 9, limit: 10 },
     })

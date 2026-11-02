@@ -19,9 +19,12 @@ BACKEND = TESTS.parent
 PY = venv_python()
 DB_FILE = BACKEND / "database.py"
 ROUTES_FILE = BACKEND / "api_summarize.py"
+KINDS_FILE = BACKEND / "quota_kinds.py"
 
 DATA = ["tests/test_quota_split.py"]
 ROUTES = ["tests/test_quota_routes.py", "tests/test_summarize_routes.py"]
+#: 额度种类注册表的守卫（结构扫描 + payload 的 labels）住在这里。
+GUARD = ["tests/test_quota_kinds_single_source.py"]
 
 
 def _loose_find(text: str, pattern: str):
@@ -75,9 +78,9 @@ def mutate_bytes(data: bytes, pattern: str, replacement: str = "") -> bytes:
 
 MUTATIONS = [
     # ── 双计数器隔离 ──
-    ("Q1 parse 与 chat 指向同一个计数字段", DB_FILE,
-     '"parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT",\n              "parse_limit_override"),',
-     '"parse": ("daily_chat_count", "last_parse_date", "DAILY_PARSE_LIMIT",\n              "parse_limit_override"),',
+    ("Q1 parse 与 chat 指向同一个计数字段", KINDS_FILE,
+     '"parse": QuotaKind(\n        "daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT",',
+     '"parse": QuotaKind(\n        "daily_chat_count", "last_parse_date", "DAILY_PARSE_LIMIT",',
      DATA),
     ("Q2 扣减写错字段：parse 写到 chat 列", DB_FILE,
      "            f\"UPDATE users SET {count_col} = 1, {date_col} = ? \"\n"
@@ -94,14 +97,14 @@ MUTATIONS = [
      "        if user[date_col] != today:\n            return True, limit\n",
      "",
      DATA),
-    ("Q5 两个计数器共用同一个日期字段", DB_FILE,
-     '"chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT",\n             "chat_limit_override"),',
-     '"chat": ("daily_chat_count", "last_parse_date", "DAILY_CHAT_LIMIT",\n             "chat_limit_override"),',
+    ("Q5 两个计数器共用同一个日期字段", KINDS_FILE,
+     '"chat": QuotaKind(\n        "daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT",',
+     '"chat": QuotaKind(\n        "daily_chat_count", "last_parse_date", "DAILY_CHAT_LIMIT",',
      DATA),
 
     # ── 环境变量上限 ──
     ("Q6 上限读成导入时冻结的值（改 env 不再生效）", DB_FILE,
-     "    return globals()[_quota_spec(kind)[2]]",
+     "    return globals()[quota_kinds.spec(kind).limit_const], \"global\"",
      "    return globals().get('_frozen_limits', {}).get(kind, 3)",
      DATA),
     ("Q7 环境变量写错时直接崩而不是退回默认", DB_FILE,
@@ -195,6 +198,16 @@ MUTATIONS = [
      '            consume_quota(user["id"], "parse")\n'
      '            head, reason, asr_reason = _subtitle_failure(subtitle_data)\n',
      ROUTES),
+
+    # ── 额度种类的唯一出处（ADR 0033）──
+    # 中文名若在 payload 里另抄一份，注册表就不再是唯一出处：前端按它渲染，
+    # 于是「加了一种额度」在界面上仍会静默少一行。
+    # 判据在 GUARD 里（payload 的 labels == 注册表），不在路由测试里——
+    # 第一次跑这条变异时把测试集写成 ROUTES，结果**存活**：路由测试根本不看 labels。
+    ("Q23 labels 不再取自注册表（协议里另抄一份中文名）", ROUTES_FILE,
+     '"labels": labels(),',
+     '"labels": {"parse": "解析"},',
+     GUARD),
 ]
 
 _COUNT_RE = re.compile(r"(\d+) (passed|failed|error)", re.IGNORECASE)

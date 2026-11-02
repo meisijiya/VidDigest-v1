@@ -2,8 +2,11 @@
  * 额度展示契约。运行：node --test tests/
  *
  * 背景：额度拆成解析 / 对话两个独立计数器（工单 #4）。
- * 这组测试锁的是「用户能看到两个独立数字」——
+ * 这组测试锁的是「用户能看到每个计数器的独立数字」——
  * 只有一个数字的话，拆分对用户就是不可见的。
+ *
+ * 种类清单与中文名由服务端随 payload 下发（`labels`，ADR 0033）。
+ * 这组用例**故意带 labels**：前端不认种类名，认的是后端给的那张表。
  *
  * 测纯函数而不是 Vue 组件：组件要挂载环境，额度文案是纯展示逻辑，
  * 抽出来才能在没有构建工具的条件下被测。
@@ -12,7 +15,10 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { describeQuota, quotaBadgeClass } from '../src/lib/quota.ts'
+import { describeQuota, quotaBadgeClass, quotaRows } from '../src/lib/quota.ts'
+
+//: 后端 `quota_kinds.labels()` 的形状。顺序即渲染顺序。
+const LABELS = { parse: '解析', chat: '追问' }
 
 // ⚠️ **顶层 eager 读**，不是 describe 体里（工单 #49）。
 //
@@ -23,7 +29,6 @@ import { describeQuota, quotaBadgeClass } from '../src/lib/quota.ts'
 // 原因：node 对 **describe 体里抛出的异常**给出的退出码是 0。
 // 模块顶层抛则会让整个文件加载失败（退出码 1），响得多。
 //
-// 工单 #19 修过 community-tags / theme / ui-fixes 三处同款，这处当时漏了。
 // 归一化行尾：仓库已统一为 LF，这一步只是防止将来混入 CRLF 时切函数体切空。
 const videoSummarySource = readFileSync(new URL('../src/components/VideoSummary.vue', import.meta.url), 'utf8').replace(
   /\r\n/g,
@@ -41,6 +46,7 @@ describe('describeQuota', () => {
     const text = describeQuota({
       logged_in: true,
       unlimited: true,
+      labels: LABELS,
       parse: { remaining: -1, limit: 3 },
       chat: { remaining: -1, limit: 10 },
     })
@@ -51,6 +57,7 @@ describe('describeQuota', () => {
     const text = describeQuota({
       logged_in: true,
       unlimited: false,
+      labels: LABELS,
       parse: { remaining: 2, limit: 3 },
       chat: { remaining: 7, limit: 10 },
     })
@@ -59,6 +66,7 @@ describe('describeQuota', () => {
     assert.match(text, /追问/)
     assert.match(text, /2\s*\/\s*3/, '解析额度应为 2 / 3')
     assert.match(text, /7\s*\/\s*10/, '追问额度应为 7 / 10')
+    assert.ok(text.indexOf('解析') < text.indexOf('追问'), '顺序跟着 labels 走')
   })
 
   test('两个额度数字不串位', () => {
@@ -66,6 +74,7 @@ describe('describeQuota', () => {
     const text = describeQuota({
       logged_in: true,
       unlimited: false,
+      labels: LABELS,
       parse: { remaining: 0, limit: 3 },
       chat: { remaining: 9, limit: 10 },
     })
@@ -77,6 +86,7 @@ describe('describeQuota', () => {
     const text = describeQuota({
       logged_in: true,
       unlimited: false,
+      labels: LABELS,
       parse: { remaining: 0, limit: 3 },
       chat: { remaining: 4, limit: 10 },
     })
@@ -85,89 +95,87 @@ describe('describeQuota', () => {
 
   test('信息缺失时给出占位而不是崩溃', () => {
     assert.equal(describeQuota(null), '—')
-    assert.equal(describeQuota({ logged_in: true, parse: null, chat: null }), '—')
+    assert.equal(describeQuota({ logged_in: true, labels: LABELS, parse: null, chat: null }), '—')
   })
 
-  test('后端缺 parse 字段时按旧形状回退', () => {
-    // 兼容期后端可能仍只给 remaining/limit；不能因此渲染成 undefined
+  test('没有 labels 时退回总量文案，而不是猜种类名', () => {
+    // 兼容期后端可能只给顶层 remaining/limit；不能因此渲染成 undefined，
+    // 也不能退化成写死的中文名——那等于把注册表抄回前端。
     const text = describeQuota({
       logged_in: true,
       unlimited: false,
       remaining: 2,
       limit: 3,
     })
-    assert.doesNotMatch(text, /undefined/)
-    assert.doesNotMatch(text, /NaN/)
+    assert.match(text, /2\s*\/\s*3/)
+    assert.doesNotMatch(text, /解析|追问/, '没有 labels 就不该出现任何种类名')
+    assert.doesNotMatch(text, /undefined|NaN/)
   })
 })
 
 /**
- * 「加第三种额度」在前端是什么形状（工单 #38 的后端收口带出来的）。
+ * 额度行由 labels 驱动（ADR 0033）。
  *
- * 后端已把额度种类收成一个常量（`database.QUOTA_KINDS`），但**前端没有**：
- * `describeQuota` / `quotaBadgeClass` 在 src/lib/quota.ts:41-42、:77 三处
- * 硬写 `quotaOf(q, 'parse')` 与 `quotaOf(q, 'chat')`。所以后端加了第三种
- * 额度之后：
- *
- *   - 不会崩、不会渲染 undefined/NaN（实测，payload 多一个键完全无害）；
- *   - **也不会多显示一行**——第三种额度压根没被前端读。
- *
- * 这就是后端那张工单正文写错的地方：它称漏一个键会让前端走
- * `fallbackQuota` 兜底、显示旧口径数字。实测不成立——降级条件是
- * `!parse && !chat`（**两个都缺**才降级，`src/lib/quota.ts:44`），少一个键
- * 只是安静地少渲染；而第三种额度的形状下，前端从头到尾不看它。
- *
- * 这组用例把「多出来的键无害」与「缺失的一半不触发兜底」两件事**真正跑出来**，
- * 而不是只断言后端契约——后端那张 Python 守卫管不到前端这条路径。
+ * 改造前 `describeQuota` / `quotaBadgeClass` 在 `src/lib/quota.ts` 里硬写
+ * `quotaOf(q, 'parse')` 与 `'chat'`，后端加第三种额度时前端**安静地少显示一种**
+ * 而不报任何错。现在种类与中文名都来自 payload 的 `labels`，多一种额度
+ * 就多一行；没有 `labels` 时退回总量文案，不猜种类名。
  */
-describe('第三种额度在前端的形状', () => {
+describe('额度行由 labels 驱动', () => {
   const base = {
     logged_in: true,
     unlimited: false,
+    labels: LABELS,
     parse: { remaining: 2, limit: 3 },
     chat: { remaining: 7, limit: 10 },
   }
 
-  test('payload 多出第三种额度时文案逐字不变（前端不读它）', () => {
-    const before = describeQuota(base)
-    const after = describeQuota({ ...base, export: { remaining: 4, limit: 8 } })
-    assert.equal(
-      after,
-      before,
-      '前端硬写 parse/chat 两个 kind（src/lib/quota.ts:41-42），第三种不会被渲染——' +
-        '这是已知边界，本条钉住它，别让它悄悄变成 undefined/NaN 或崩溃',
+  test('payload 多出一种额度就多一行，前端不用改', () => {
+    const withExport = {
+      ...base,
+      labels: { ...LABELS, export: '导出' },
+      export: { remaining: 4, limit: 8 },
+    }
+    assert.deepEqual(
+      quotaRows(withExport).map((r) => [r.key, r.label, r.text]),
+      [
+        ['parse', '解析', '2 / 3'],
+        ['chat', '追问', '7 / 10'],
+        ['export', '导出', '4 / 8'],
+      ],
+    )
+    assert.match(describeQuota(withExport), /导出 4 \/ 8/)
+  })
+
+  test('labels 里有、槽位缺失的种类不出行', () => {
+    const rows = quotaRows({ ...base, chat: undefined })
+    assert.deepEqual(
+      rows.map((r) => r.key),
+      ['parse'],
+      '槽位缺失时不出半行',
     )
   })
 
-  test('payload 多出第三种额度时徽章色不变', () => {
-    assert.equal(
-      quotaBadgeClass({ ...base, export: { remaining: 4, limit: 8 } }),
-      quotaBadgeClass(base),
-      '徽章色只看 parse/chat 两个槽位（src/lib/quota.ts:77）',
-    )
-  })
-
-  test('只缺 chat 时不触发兜底，输出与只缺 chat 的旧形状一致', () => {
-    // 降级条件是 `!parse && !chat`（src/lib/quota.ts:44）——两个都缺才降级。
-    // 这条把工单正文那条「少一个键就走 fallback」的错误判据钉成反面。
-    const missingChat = describeQuota({
-      logged_in: true,
-      unlimited: false,
-      parse: { remaining: 2, limit: 3 },
-    })
-    assert.doesNotMatch(missingChat, /undefined/)
-    assert.doesNotMatch(missingChat, /NaN/)
-    assert.match(missingChat, /解析/, '还剩 parse 可显示，不该降级成旧口径文案')
-  })
-
-  test('两个都缺才降级到旧形状（兼容期回退仍然有效）', () => {
+  test('没有 labels 时不出分种类的行，退回总量', () => {
+    assert.deepEqual(quotaRows({ logged_in: true, parse: base.parse, chat: base.chat }), [])
     const text = describeQuota({
       logged_in: true,
-      unlimited: false,
       remaining: 2,
       limit: 3,
+      parse: base.parse,
+      chat: base.chat,
     })
-    assert.match(text, /2\s*\/\s*3/, '两个槽位都缺时才用顶层 remaining/limit 兜底')
+    assert.match(text, /2\s*\/\s*3/)
+    assert.doesNotMatch(text, /解析|追问/)
+  })
+
+  test('新增的额度用完时徽章转红', () => {
+    const cls = quotaBadgeClass({
+      ...base,
+      labels: { ...LABELS, export: '导出' },
+      export: { remaining: 0, limit: 8 },
+    })
+    assert.match(cls, /red/, '任一额度耗尽就该警示，不管它是第几种')
   })
 })
 
@@ -181,6 +189,7 @@ describe('quotaBadgeClass', () => {
     const cls = quotaBadgeClass({
       logged_in: true,
       unlimited: true,
+      labels: LABELS,
       parse: { remaining: -1, limit: 3 },
       chat: { remaining: -1, limit: 10 },
     })
@@ -191,6 +200,7 @@ describe('quotaBadgeClass', () => {
     const cls = quotaBadgeClass({
       logged_in: true,
       unlimited: false,
+      labels: LABELS,
       parse: { remaining: 0, limit: 3 },
       chat: { remaining: 4, limit: 10 },
     })
@@ -201,6 +211,7 @@ describe('quotaBadgeClass', () => {
     const cls = quotaBadgeClass({
       logged_in: true,
       unlimited: false,
+      labels: LABELS,
       parse: { remaining: 2, limit: 3 },
       chat: { remaining: 8, limit: 10 },
     })
@@ -217,32 +228,29 @@ describe('quotaBadgeClass', () => {
  * 组件接线守卫（静态检查，不是渲染测试）。
  *
  * 独立复审时发现：整套前端测试里对 .vue 的引用数为 0。也就是说
- * applyQuotaEvent 只要丢掉 parse / chat，界面就会无声退回单数字，
+ * applyQuotaEvent 只要丢掉事件里的槽位，界面就会无声退回单数字，
  * 而纯函数测试照样全绿。
  *
- * 这里只做源码层面的存在性检查——它证明不了渲染结果，
- * 但能挡住「有人把某条流的 onQuota 摘掉 / 把 parse、chat 丢了」这类
- * 最常见的接线回归。真正的渲染验证需要挂载环境 —— 那个环境**已经有了**
- * （工单 #18 建的 vitest + jsdom + @vue/test-utils，走 `npm run test:mount`），
- * 本条仍留在文本断言是因为它守的是「applyQuotaEvent 的函数体里必须逐字出现
- * parse / chat 这两个键」，挂载后看不到函数体，断言会退化成
- * 「界面上没出现 parse」——而模板写了只是没渲染到，恰恰是要抓的回归。
- * 详见 TESTING-STRATEGY §3.5：判据按「这条用例断言的对象」分，不按文件类型分。
+ * 这里只做源码层面的存在性检查——它证明不了渲染结果，但能挡住
+ * 「有人把某条流的 onQuota 摘掉 / 把事件里的槽位丢掉」这类接线回归。
+ * 真正的渲染验证需要挂载环境 —— 那个环境**已经有了**（工单 #18 建的
+ * vitest + jsdom + @vue/test-utils，走 `npm run test:mount`），
+ * 本条仍留在文本断言是因为它守的是「函数体里必须整体展开事件」，
+ * 挂载后看不到函数体。详见 TESTING-STRATEGY §3.5。
  */
 describe('VideoSummary 组件接线', () => {
   // 源码在**模块顶层**已读进 videoSummarySource —— 这里不再读。
-  // 放在 describe 体里的话，改名 .vue 会让整个 suite 静默消失而退出码仍是 0。
   const source = videoSummarySource
 
-  test('applyQuotaEvent 原样保留事件的 parse 与 chat', () => {
+  test('applyQuotaEvent 整体展开事件而不是逐项挑字段', () => {
     const start = source.indexOf('function applyQuotaEvent(')
     assert.notEqual(start, -1, '找不到 applyQuotaEvent')
     // 用紧跟其后的顶层 "}\n" 收尾——切窄了会切到内层对象字面量的括号，
-    // 那样下面两条断言就成了空断言。
+    // 那样下面的断言就成了空断言。
     const body = source.slice(start, source.indexOf('\n}\n', start) + 2)
-    assert.match(body, /quotaInfo\.value\s*=/, '切出来的不是完整函数体')
-    assert.match(body, /parse:\s*d\.parse/, 'applyQuotaEvent 丢掉了 parse')
-    assert.match(body, /chat:\s*d\.chat/, 'applyQuotaEvent 丢掉了 chat')
+    assert.match(body, /quotaInfo\.value\s*=\s*\{\s*\.\.\.d\b/, 'expand 事件本身，别逐项挑字段')
+    assert.match(body, /logged_in:\s*true/, '写成 logged_in: true（事件不带这个标记）')
+    assert.doesNotMatch(body, /parse:/, '又按种类名挑字段了——种类是服务端决定的')
   })
 
   test('总结流与追问流都把 quota 事件接到同一个处理器', () => {

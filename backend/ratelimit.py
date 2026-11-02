@@ -92,7 +92,7 @@ BUCKETS = {
 #: 进来只会让三个都变慢。宁可让用户等一下，也不要让整台机器被一个来源拖垮。
 #:
 #: 桶名沿用「被限的那个端点路径」，与速率闸门同一约定（ADR 0021）。为什么
-#: 不写 `parse` 那种短名：额度种类在 `database.QUOTA_KINDS` 里只有一处枚举，
+#: 不写 `parse` 那种短名：额度种类在 `quota_kinds.QUOTA_KINDS` 里只有一处枚举，
 #: 别处再写一遍会破坏那条结构守卫。
 CONCURRENCY_BUCKETS = {
     "/api/parse": ("VIDDIGEST_CONCURRENCY_PARSE", 2),

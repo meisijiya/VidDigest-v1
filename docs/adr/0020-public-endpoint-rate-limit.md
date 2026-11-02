@@ -49,7 +49,7 @@ date: 2026-10-24
   （`rate_limit("/api/parse")` 这样的依赖，装配时桶名写错会直接报错，
   不会变成「端点没挂上限还不吭声」）。
 - **桶名就是被限的那个端点路径**（`/api/parse`、`/api/login`…），不另起一套
-  抽象词：`parse` 是「额度种类」的名字（`database.QUOTA_KINDS`），限流桶若也
+  抽象词：`parse` 是「额度种类」的名字（`quota_kinds.QUOTA_KINDS`），限流桶若也
   用这个词，会撞上「额度种类只有一处枚举」那条结构守卫
   （`backend/tests/test_quota_kinds_single_source.py`）。改桶名而不是给守卫加
   豁免，是为了让那条守卫对所有后来人照样有效。
