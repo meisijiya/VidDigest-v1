@@ -29,6 +29,15 @@ MAIN = "backend/main.py"
 AGENTS = "AGENTS.md"
 INIT = "init.sh"
 
+#: `init.sh` 现在真跑几关——**从 init.sh 数**，不写死数字。
+#:
+#: 写死过一次：门禁从 11 关变 12 关（ADR 0035 加了概念索引那一关），
+#: 而这里 G3 注入的还是「跑11件」→ 关卡一致性判它与真实关卡数不符 → 转红，
+#: G3 这条「写对必须放行」的反向对照自己先死了。数字会变，所以从源头数。
+GATE_COUNT = 0
+with open(os.path.join(REPO, INIT), "r", encoding="utf-8") as fh:
+    GATE_COUNT = fh.read().count("RAN=$((RAN + 1))")
+
 # (用例名, 检查器, 目标文件, 注入方式, 注入内容, 期望关卡失败)
 CASES = [
     ("R1 注释里引用不存在的 ADR 编号",
@@ -61,7 +70,8 @@ CASES = [
     ("G2 关卡块自报的序号错位",
      "gate", INIT, "before", "# 第 9 关\n", True),
     ("G3 反向对照：关卡数写对必须放行",
-     "gate", AGENTS, "append", "\n它依次跑11件真会失败的事。\n", False),
+     "gate", AGENTS, "append",
+     "\n它依次跑%d件真会失败的事。\n" % GATE_COUNT, False),
     ("G4 反向对照：自报序号正确必须放行",
      "gate", INIT, "before", "# 第 1 关\n", False),
 ]
