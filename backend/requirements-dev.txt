@@ -1,4 +1,4 @@
 # 测试专用依赖。运行测试： pytest backend/tests -q
 # 注意：backend/tests 依赖 pytest 的 rootdir 导入方式，需在 backend 目录下运行
 #   cd backend && pytest tests -q
-pytest>=9.1.1
+pytest>=9.2.0
