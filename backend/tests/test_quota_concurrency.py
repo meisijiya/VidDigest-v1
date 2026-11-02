@@ -26,11 +26,12 @@ import threading
 import pytest
 
 import database
+import quota_kinds
 
 
 def _count(uid, kind="parse"):
     """一次读出某个计数器的当前值——判据落在库上，不落在返回值上。"""
-    col = database._quota_spec(kind)[0]
+    col = quota_kinds.spec(kind).count_col
     with database.get_db() as c:
         row = c.execute(f"SELECT {col} FROM users WHERE id=?", (uid,)).fetchone()
     return row[col] or 0

@@ -268,7 +268,7 @@ const reader = res.body.getReader()
 # 两步走：先只判定，不扣
 def _check_quota_permission(user: dict | None, kind: str):
     limit = quota_limit(kind)          # 走模块当前值，不在 import 期冻结
-    label = _QUOTA_LABELS[kind]        # "解析" / "追问"
+    label = spec(kind).label           # 取注册表的中文名："解析" / "追问"
     if not user:
         return False, 0, "请先登录后使用 AI 功能"
     allowed, remaining = check_quota_kind(user["id"], kind)
@@ -280,8 +280,10 @@ def _check_quota_permission(user: dict | None, kind: str):
 consume_quota(user["id"], kind)
 ```
 
-`kind` 只能是 `"parse"`（解析，产出总结 + 思维导图 + 标签）或 `"chat"`（追问）。
-两个计数器在同一张 `users` 表上但各占自己的列与日期字段，彼此独立、各自按 UTC 日期重置。
+`kind` 的取值由 `backend/quota_kinds.py` 的 `QUOTA_KINDS` 注册表定义：现为 `"parse"`
+（解析，产出总结 + 思维导图 + 标签）与 `"chat"`（追问）。两个计数器在同一张 `users`
+表上但各占自己的列与日期字段，彼此独立、各自按 UTC 日期重置。中文名也在注册表里，
+随 `/api/quota` 的 `labels` 下发，前端不再自己抄一份。
 
 | 用户状态 | 响应行为 |
 |:---------|:---------|

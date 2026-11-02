@@ -21,25 +21,17 @@ from database import (
     consume_quota,
     get_recent_chat_messages,
     get_video_by_url,
-    QUOTA_KINDS,
     quota_limit,
     refund_quota,
     regenerate_video,
 )
 from prompt_template import default_template_id, is_known_template, list_templates
+from quota_kinds import QUOTA_KINDS, labels, spec
 from tags import validate_tags
 
 logger = logging.getLogger("api_summarize")
 
 router = APIRouter(prefix="/api", tags=["AI 总结"])
-
-#: 额度种类 → 中文名，只用于「今日XX次数已用完」这类提示文案。
-#:
-#: ⚠️ 这是**收口后仍需手工登记**的一处（工单 #38）：键集必须等于
-#: `database.QUOTA_KINDS`，而中文名是循环产不出来的专有数据。
-#: 漏登记的症状曾是响亮的 `KeyError`（`_check_quota_permission` 直接下标取），
-#: 现在由 `tests/test_quota_kinds_single_source.py` 在门禁里指名缺哪一种。
-_QUOTA_LABELS = {"parse": "解析", "chat": "追问"}
 
 #: 未登录时的提示。提出来是因为这条拒绝要发生两次：
 #: 一次在抢占位之前（未登录的人不该去占一个位置让别人干等），
@@ -78,7 +70,7 @@ async def get_quota(user: dict | None = Depends(get_optional_user)):
         # `!parse && !chat`（两个都缺才降级），所以单缺一个**不会**触发兜底，
         # 只会安静地少显示一种额度（工单 #38 实测，输出前后逐字相同）。
         return {"logged_in": False, "unlimited": False, "remaining": None,
-                "limit": quota_limit("parse"),
+                "limit": quota_limit("parse"), "labels": labels(),
                 **{kind: None for kind in QUOTA_KINDS}}
     return {"logged_in": True, **_quota_payload(user["id"])}
 
@@ -86,7 +78,7 @@ async def get_quota(user: dict | None = Depends(get_optional_user)):
 def _quota_payload(user_id: int, primary: str = "parse") -> dict:
     """每种额度各自的 (allowed, remaining, limit)，供前端分别展示。
 
-    种类取自 `database.QUOTA_KINDS`（工单 #38）——原来这里硬写
+    种类取自 `quota_kinds.QUOTA_KINDS`（工单 #38）——原来这里硬写
     `("parse", "chat")`，漏改不报错：`/api/quota` 少一个键，前端安静地
     少显示一种额度，而当时没有任何测试会红。
 
@@ -109,6 +101,9 @@ def _quota_payload(user_id: int, primary: str = "parse") -> dict:
     head = payload[primary]
     return {
         **payload,
+        # 中文名随额度一起下发（ADR 0033）：前端不再自己抄一份种类与文案，
+        # 后端加一种额度就多一行，前端按 labels 的键序渲染。
+        "labels": labels(),
         "unlimited": head["remaining"] == -1,
         "remaining": head["remaining"],
         "limit": head["limit"],
@@ -189,7 +184,7 @@ class ChatRequest(BaseModel):
 
 def _check_quota_permission(user: dict | None, kind: str):
     """检查某类额度权限（只判定，不扣）。"""
-    label = _QUOTA_LABELS[kind]
+    label = spec(kind).label
 
     if not user:
         return False, 0, _NOT_LOGGED_IN

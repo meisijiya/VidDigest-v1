@@ -310,6 +310,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { PropType } from 'vue'
 import type { SessionUser } from '../api/auth.ts'
 import type { ByokPublicState } from '../lib/byok.ts'
+import { quotaRows as buildQuotaRows } from '../lib/quota.ts'
+import type { QuotaPayload } from '../lib/quota.ts'
 import PixelLogo from './PixelLogo.vue'
 import { useTheme } from '../composables/useTheme.ts'
 
@@ -326,7 +328,7 @@ const props = defineProps({
    * 真正的判断在服务端 require_admin（ADR 0010）。
    */
   isAdmin: { type: Boolean, default: false },
-  quota: { type: Object as PropType<Record<string, unknown> | null>, default: null },
+  quota: { type: Object as PropType<QuotaPayload | null>, default: null },
   quotaLoading: { type: Boolean, default: false },
   /**
    * 自带凭据的**公开**状态（lib/byok.getPublicState）。
@@ -353,44 +355,13 @@ const headerRef = ref<HTMLElement | null>(null)
 const quotaOpen = ref(false)
 
 /**
- * 额度面板的两行。
+ * 额度面板的两行（或将来更多行）。
  *
- * 复用 lib/quota.js 的判定口径而不是自己再抄一遍：同一份额度如果
- * 页面上有两套解释（「用完」到底看 parse 还是 chat），用户会看到
- * 自相矛盾的提示。exhausted 沿用那里的规则——任一计数器用完就警示。
+ * 行构造在 `lib/quota.ts` 的 `quotaRows`：同一份额度如果页面上有两套解释
+ * （「用完」到底看哪一类、中文名叫什么），用户会看到自相矛盾的提示。
+ * 种类与文案由后端随 payload 下发（`labels`，ADR 0033），这里不认种类名。
  */
-const quotaRows = computed(() => {
-  const q = props.quota
-  if (!q) return []
-  if (!q.logged_in) return [{ key: 'login', label: '状态', text: '登录后可用', exhausted: false }]
-  if (q.unlimited) return [{ key: 'unlimited', label: '状态', text: '无限次', exhausted: false }]
-
-  const rows = []
-  for (const [key, label] of [
-    ['parse', '解析'],
-    ['chat', '追问'],
-  ]) {
-    const slot = q[key]
-    if (!slot || typeof slot !== 'object') continue
-    // 额度槽位的形状由服务端决定（parse / chat 两种），这里只取两个数，
-    // 所以就地收窄出要用的字段，不把整块 any 引进类型系统。
-    const counters = slot as { remaining?: unknown; limit?: unknown }
-    const remaining = Number(counters.remaining)
-    const limit = Number(counters.limit)
-    if (!Number.isFinite(remaining) || !Number.isFinite(limit)) continue
-    if (remaining === -1) {
-      rows.push({ key, label, text: '无限', exhausted: false })
-    } else {
-      rows.push({
-        key,
-        label,
-        text: remaining <= 0 ? `已用完（0 / ${limit}）` : `${remaining} / ${limit}`,
-        exhausted: remaining <= 0,
-      })
-    }
-  }
-  return rows
-})
+const quotaRows = computed(() => buildQuotaRows(props.quota))
 
 function onQuotaEnter() {
   quotaOpen.value = true

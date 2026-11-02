@@ -340,12 +340,15 @@ describe('问题7 · 悬停邮箱显示额度面板', () => {
     assert.match(headerVue, /v-if="quotaOpen"/, '面板没有受控于展开状态')
   })
 
-  test('两个额度都列出来（工单 #4 拆过计数器，只显示一个等于没拆）', () => {
+  test('额度行由 lib/quota 构造，顶栏不自己列种类（ADR 0033）', () => {
+    // 改造前面板里硬写 [['parse','解析'],['chat','追问']]：加第三种额度时
+    // 面板静默少一行，而这条断言恰好把「硬写」钉成了正确行为。
     assert.match(
       headerVue,
-      /\[\s*\[\s*'parse'\s*,\s*'解析'\s*\]\s*,\s*\[\s*'chat'\s*,\s*'追问'\s*\],?\s*\]/,
-      '面板没有同时列出解析与追问两个额度',
+      /buildQuotaRows\(props\.quota\)/,
+      '面板不再从 lib/quota 的 quotaRows 取行——种类与中文名由服务端给',
     )
+    assert.doesNotMatch(headerVue, /'parse'\s*,\s*'解析'/, '顶栏又按种类名硬写了中文名——那份清单只能在后端注册表里')
   })
 
   test('数据由 App.vue 提供，且悬停时才拉', () => {

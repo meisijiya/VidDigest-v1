@@ -28,6 +28,10 @@ from mindmap import (
 # 必须跟着清单走，另写一份 'full' 就是两份真值。
 from prompt_template import default_template_id
 
+# 额度种类的唯一注册表（ADR 0033）。同样不 import 本项目任何东西——列名与
+# 中文名只有一份，本模块只决定怎么用它们。
+import quota_kinds
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "app.db")
 
 # 线程本地连接缓存（uvicorn 线程池复用线程，连接随之复用）
@@ -95,29 +99,6 @@ def _env_int(name: str, default: int) -> int:
 
 DAILY_PARSE_LIMIT = _env_int("VIDDIGEST_DAILY_PARSE_LIMIT", 3)
 DAILY_CHAT_LIMIT = _env_int("VIDDIGEST_DAILY_CHAT_LIMIT", 10)
-
-#: 额度种类 → (计数字段, 日期字段, 上限常量名, 覆盖列名)
-#: 两个计数器在同一张 users 表上，但各占自己的列与日期字段。
-#:
-#: 第四项是工单 #12 新增的「单人覆盖列」。它必须与前三项**待在同一张表里**：
-#: 把覆盖列名单独开一张映射，就多出一处「新增额度种类时忘了在这里登记」的位置，
-#: 而那种遗漏的表现是 override 永远读不到（静默回落全局），不是报错。
-#:
-#: **本常量是额度种类的唯一出处**（工单 #38）。它原名 `_QUOTA_KINDS`，提成公开
-#: 是因为 `api_summarize` / `admin_api` 都要遍历它——一个以下划线开头的名字被
-#: 别的模块 import 时，名字在说「模块内部用」，而它实际已是跨模块契约。
-#:
-#: ⚠️ 新增第三种额度时**仍有两处改不了**（它们含额度种类的专有数据，不是循环）：
-#:   - `api_summarize._QUOTA_LABELS` 的中文名（循环产不出中文名）
-#:   - `admin_api.QuotaUpdateRequest` 的 `f"{kind}_limit"` 字段声明
-#:     （pydantic 字段必须静态声明，且未声明的键会被**静默丢弃**）
-#: 两处都由 `tests/test_quota_kinds_single_source.py` 守着，漏了会指名缺哪一种。
-QUOTA_KINDS = {
-    "parse": ("daily_parse_count", "last_parse_date", "DAILY_PARSE_LIMIT",
-              "parse_limit_override"),
-    "chat": ("daily_chat_count", "last_chat_date", "DAILY_CHAT_LIMIT",
-             "chat_limit_override"),
-}
 
 
 def get_db_path():
@@ -1779,20 +1760,6 @@ def is_vip_active(user) -> bool:
 # 留着只会让人以为还有第二条计费路径。这里是唯一的计费实现。
 
 
-def _quota_spec(kind: str) -> tuple[str, str, str, str]:
-    """取出某类额度对应的 (计数字段, 日期字段, 上限常量名, 覆盖列名)。
-
-    拼错的 kind 立刻抛错：静默 fallback 会让「扣了对话额度却记到解析头上」
-    这类错误一路走到用户面前才发现。
-    """
-    spec = QUOTA_KINDS.get(kind)
-    if spec is None:
-        raise ValueError(
-            f"未知的额度类型 {kind!r}；可用：{sorted(QUOTA_KINDS)}"
-        )
-    return spec
-
-
 #: 「无限」的取值。与 ``remaining == -1`` 的既有约定同一个数：
 #: 数据层一律用 -1 表示不限量，覆盖列也用同一个数，两边不必再翻译一次。
 QUOTA_UNLIMITED = -1
@@ -1816,7 +1783,7 @@ def _resolve_quota_limit(kind: str, override: int | None, vip_active: bool) -> t
         return QUOTA_UNLIMITED, "vip"
     if override is not None:
         return int(override), "override"
-    return globals()[_quota_spec(kind)[2]], "global"
+    return globals()[quota_kinds.spec(kind).limit_const], "global"
 
 
 def quota_limit(kind: str, user_id: int | None = None) -> int:
@@ -1839,17 +1806,19 @@ def quota_limit(kind: str, user_id: int | None = None) -> int:
     """
     if user_id is None:
         return _resolve_quota_limit(kind, None, vip_active=False)[0]
+    override_col = quota_kinds.spec(kind).override_col
     with get_db() as conn:
         row = conn.execute(
-            f"SELECT {_quota_spec(kind)[3]} FROM users WHERE id = ?", (user_id,)
+            f"SELECT {override_col} FROM users WHERE id = ?", (user_id,)
         ).fetchone()
-    override = row[_quota_spec(kind)[3]] if row else None
+    override = row[override_col] if row else None
     return _resolve_quota_limit(kind, override, vip_active=False)[0]
 
 
 def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
     """判定单类额度。只读，不写库。返回 (allowed, remaining)，-1 表示无限。"""
-    count_col, date_col, _, _ = _quota_spec(kind)
+    record = quota_kinds.spec(kind)
+    count_col, date_col = record.count_col, record.date_col
     limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -1883,7 +1852,7 @@ def check_quota_kind(user_id: int, kind: str) -> tuple[bool, int]:
 
 def check_quota(user_id: int) -> dict:
     """一次判定全部额度。键固定为 parse / chat。"""
-    return {kind: check_quota_kind(user_id, kind) for kind in QUOTA_KINDS}
+    return {kind: check_quota_kind(user_id, kind) for kind in quota_kinds.QUOTA_KINDS}
 
 
 def consume_quota(user_id: int, kind: str) -> int:
@@ -1913,7 +1882,8 @@ def consume_quota(user_id: int, kind: str) -> int:
       · `>= 0`               = 扣减后的 remaining（**恰好用完时就是 0**）
       · `None`               = **本次没扣成**（额度已满）。这是新增的第三态。
     """
-    count_col, date_col, _, _ = _quota_spec(kind)
+    record = quota_kinds.spec(kind)
+    count_col, date_col = record.count_col, record.date_col
     limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -1986,7 +1956,8 @@ def refund_quota(user_id: int, kind: str) -> int:
     绝不会把计数压到负数，也不会跨天给今天白送额度，
     更不会把并发的另一次扣减覆盖掉。
     """
-    count_col, date_col, _, _ = _quota_spec(kind)
+    record = quota_kinds.spec(kind)
+    count_col, date_col = record.count_col, record.date_col
     limit = quota_limit(kind, user_id)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -2056,7 +2027,8 @@ def _quota_used_today(row, kind: str) -> int:
     不这么做的话，后台会在第二天早上显示「已用 3 次」而用户实际满额可用——
     管理员会据此去改额度，改的却是一个昨天的事实。
     """
-    count_col, date_col, _, _ = _quota_spec(kind)
+    record = quota_kinds.spec(kind)
+    count_col, date_col = record.count_col, record.date_col
     if row[date_col] != datetime.now(timezone.utc).strftime("%Y-%m-%d"):
         return 0
     return row[count_col] or 0
@@ -2077,11 +2049,11 @@ def _admin_user_item(row) -> dict:
         "created_at": row["created_at"],
     }
     vip_active = is_vip_active(row)
-    for kind, (count_col, date_col, limit_name, override_col) in QUOTA_KINDS.items():
-        limit, source = _resolve_quota_limit(kind, row[override_col], vip_active)
+    for kind, record in quota_kinds.QUOTA_KINDS.items():
+        limit, source = _resolve_quota_limit(kind, row[record.override_col], vip_active)
         item[f"{kind}_used"] = _quota_used_today(row, kind)
         item[f"{kind}_limit"] = limit
-        item[f"{kind}_limit_override"] = row[override_col]
+        item[f"{kind}_limit_override"] = row[record.override_col]
         item[f"{kind}_limit_source"] = source
     return item
 
@@ -2141,7 +2113,7 @@ def set_user_quota_override(user_id: int, overrides: dict) -> int:
     值是 None 表示**清除覆盖**、回落全局。只写传进来的 key，
     没传的 key 一个字都不动。
 
-    列名一律取自 ``QUOTA_KINDS``，不接受外部传入——拼进 SQL 的必须是
+    列名一律取自 ``quota_kinds.QUOTA_KINDS``，不接受外部传入——拼进 SQL 的必须是
     白名单里的常量，不是请求里的字符串。
     """
     if not overrides:
@@ -2149,7 +2121,7 @@ def set_user_quota_override(user_id: int, overrides: dict) -> int:
     assignments, params = [], []
     for kind, value in overrides.items():
         # 拼错的 kind 在这里抛，而不是拼出一条 no such column 的 UPDATE。
-        _, _, _, override_col = _quota_spec(kind)
+        override_col = quota_kinds.spec(kind).override_col
         assignments.append(f"{override_col} = ?")
         params.append(value)
     with get_db() as conn:
