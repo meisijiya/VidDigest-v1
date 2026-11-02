@@ -44,8 +44,8 @@
 | CI | 4 个 job 定义，展开 26 个实例 | `.github/workflows/ci.yml`（A9） |
 | 业务表 | 7 张 + 1 个 FTS5 虚表 + 6 个触发器 | 建表语句（A10） |
 | 公开端点限流 | 6 个端点按来源 IP 限速，每分钟 20 / 10 / 30 / 60 / 10 / 5 | `backend/ratelimit.py`（A19、ADR 0020） |
-| 设计决策 | 30 篇 ADR（29 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
-| 受管理的 Markdown | 50 个 | `git ls-files '*.md'`（A12） |
+| 设计决策 | 31 篇 ADR（30 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
+| 受管理的 Markdown | 51 个 | `git ls-files '*.md'`（A12） |
 | 编码代理的工单 | 85 条（全部关闭） | `gh issue list --state all --limit 200 --json labels`（A13） |
 
 ### 1.2 两条主线
@@ -481,8 +481,8 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A8 | 11 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
 | A9 | 4 个 job 定义 / 26 个实例 | 1 个门禁 job + 1 个生产构建 job + 20 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
 | A10 | 7 张业务表 + 1 张 FTS5 虚表 + 6 条触发器（3 条 `*_fill_canonical` + 3 条 `videos_fts_*`） | 库里实际存在的建表 / 建虚表 / 建触发器对象（FTS5 自带的 4 张影子表 `videos_fts_data` / `_idx` / `_docsize` / `_config` 不计） | `backend/venv/Scripts/python.exe -c "import sqlite3;print(sqlite3.connect('backend/data/app.db').execute(\"select type,name from sqlite_master where name not like 'sqlite_%'\").fetchall())"` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
-| A11 | 30 | `docs/adr/` 下的文件数（29 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
-| A12 | 50 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
+| A11 | 31 | `docs/adr/` 下的文件数（30 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
+| A12 | 51 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
 | A13 | 72（`ready-for-agent` 标签）/ 85（全部工单） | 编码代理可领的工单数 / 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number,labels --jq '[.[] \| select(any(.labels[]; .name=="ready-for-agent"))] \| length'` 与 `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
