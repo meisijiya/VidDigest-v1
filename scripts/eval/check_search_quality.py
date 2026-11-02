@@ -28,6 +28,7 @@
 """
 import json
 import os
+import shutil
 import sys
 import tempfile
 
@@ -114,6 +115,22 @@ def expected_docs(query, documents):
 
 
 def run(corpus):
+    """评测在临时库里跑；跑完把临时库删掉。
+
+    门禁每次都跑这个脚本，临时库留在 ``%TEMP%`` 里只会一天天堆下去。
+    """
+    tmpdir = tempfile.mkdtemp(prefix="viddigest-eval-")
+    try:
+        return _run(corpus, tmpdir)
+    finally:
+        import database
+
+        # 连接池里可能还攥着那个库文件；Windows 上文件被开着就删不掉。
+        database.forget_all_connections()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _run(corpus, tmpdir):
     import database
 
     report = Report()
@@ -121,7 +138,6 @@ def run(corpus):
     queries = corpus["queries"]
     thresholds = corpus["thresholds"]
 
-    tmpdir = tempfile.mkdtemp(prefix="viddigest-eval-")
     database.DB_PATH = os.path.join(tmpdir, "eval.db")
     database.forget_all_connections()
     database.init_db()
