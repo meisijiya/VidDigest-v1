@@ -786,7 +786,7 @@ def test_only_the_two_heavy_endpoints_carry_the_concurrency_gate():
 def test_the_mutation_script_is_in_the_ci_matrix():
     """变异装置必须进 CI 矩阵。
 
-    为什么：变异装置不跑在 init.sh 里（init.sh 只跑那 11 件「真会失败」的
+    为什么：变异装置不跑在 init.sh 里（init.sh 只跑那 12 件「真会失败」的
     事），它只跑在 CI 的矩阵里。忘了加进矩阵，这个装置就永远不会执行，
     而它绿着不绿着都没人知道。
     """

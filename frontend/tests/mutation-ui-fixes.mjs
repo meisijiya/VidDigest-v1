@@ -540,7 +540,13 @@ for (const m of MUTANTS) {
           // 必须用与 `npm test` 相同的 glob：传单个文件路径时 node --test
           // 不产出 TAP 计数，于是「变异后测试跑不起来」和「测试全过」长得
           // 一模一样，12 条变异会假性全部存活。
-          ['--test', '--test-timeout=10000', 'tests/**/*.test.mjs'],
+          //
+          // **必须显式指定 TAP reporter**：node 的默认 reporter 跟着 stdout
+          // 是不是终端变——终端是 spec（失败行 `✖ <名字> (0.17ms)`），
+          // 管道里是 TAP（失败行 `not ok 3 - <名字>`）。CI 里 stdout 是管道，
+          // 本机常常也是管道，于是「本机过、CI 挂」。判据要跨机器一致，
+          // 就把输出格式钉死：TAP 从 node 18 起就是稳定格式。
+          ['--test', '--test-reporter=tap', '--test-timeout=10000', 'tests/**/*.test.mjs'],
           { cwd: FE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
         )
         ran = 0
@@ -548,14 +554,20 @@ for (const m of MUTANTS) {
         out = (e.stdout || '') + (e.stderr || '')
         ran = 1
       }
-      // node 的失败行是 `  ✖ <用例名> (0.17ms)`。解析出来才能像 vitest 那样
-      // 声明「该转红的用例」与「反向对照必须保持绿」——没有它，node 变异
-      // 只能判「红没红」，反向对照就成了空话。
-      failedTests = stripAnsi(out)
-        .split('\n')
+      // 失败用例名：TAP 的 `not ok N - <名字>`（钉死的格式）为主，
+      // spec 的 `✖ <名字> (0.17ms)` 为兜底（有人改了 reporter 参数时仍能读）。
+      // 读出名字才能像 vitest 那样声明「该转红的用例」与「反向对照必须保持绿」
+      // ——没有它，node 变异只能判「红没红」，反向对照就成了空话。
+      const lines = stripAnsi(out).split('\n')
+      const tapNames = lines
+        .map((l) => l.match(/^\s*not ok\s+\d+\s*-\s*(.+?)\s*$/))
+        .filter(Boolean)
+        .map((mm) => mm[1].trim())
+      const specNames = lines
         .map((l) => l.match(/✖\s+(.+?)(?:\s+\(\d+(?:\.\d+)?ms\))?$/))
         .filter(Boolean)
         .map((mm) => mm[1].trim())
+      failedTests = [...new Set([...tapNames, ...specNames])]
       // 判据必须看**实际跑了多少条**：
       // 变异可能把源码改坏到测试导入失败，那不是「测试通过」。
       const mRan = out.match(/#\s*tests\s+(\d+)/) || out.match(/tests (\d+)/)
