@@ -46,6 +46,7 @@ universal-video-downloader/
 │   ├── ratelimit.py      # 公开端点的速率闸门与并发闸门（ADR 0020 / 0021 / 0022）
 │   ├── download_artifacts.py # 下载产物的落盘与清理
 │   ├── auth.py           # JWT + bcrypt
+│   ├── cors_config.py    # 跨域白名单（默认不开，按环境变量显式开口）
 │   ├── logging_setup.py  # JSON 行日志与轮转
 │   ├── database.py       # SQLite 数据层 + 迁移
 │   ├── api_*.py          # API 路由模块（auth / community / history / payment / summarize）
@@ -69,7 +70,7 @@ universal-video-downloader/
 ├── docs/             # 文档
 │   ├── adr/         # 架构决策记录
 │   ├── agents/      # 编码代理约定
-│   └── *.md         # API / 运维 / 测试策略 / 技术文档 / 邀请码
+│   └── *.md         # API / 运维 / 测试策略 / 技术文档 / AI 功能说明 / 邀请码
 ├── init.sh           # 门禁入口（唯一）
 ├── docker-compose.yml# 容器化编排
 └── .github/workflows/# CI 工作流

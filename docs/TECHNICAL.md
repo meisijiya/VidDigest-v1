@@ -36,7 +36,7 @@
 | REST 端点 | 44 | 路由装饰器计数（A1） |
 | 挂鉴权依赖的端点 | 32（`get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1520 | `pytest --collect-only`（A4） |
+| 后端用例 | 1521 | `pytest --collect-only`（A4） |
 | 前端静态 / 契约断言 | 538 | `npm test`（A5） |
 | 前端挂载用例 | 218 | `npm run test:mount`（A6） |
 | 变异脚本 | 24（后端 20 + 前端 4） | 文件清单（A7） |
@@ -46,7 +46,7 @@
 | 公开端点限流 | 6 个端点按来源 IP 限速，每分钟 20 / 10 / 30 / 60 / 10 / 5 | `backend/ratelimit.py`（A19、ADR 0020） |
 | 设计决策 | 29 篇 ADR（28 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
 | 受管理的 Markdown | 49 个 | `git ls-files '*.md'`（A12） |
-| 编码代理的工单 | 70 条（全部关闭） | `gh issue list --state all --limit 200 --json labels`（A13） |
+| 编码代理的工单 | 85 条（全部关闭） | `gh issue list --state all --limit 200 --json labels`（A13） |
 
 ### 1.2 两条主线
 
@@ -100,7 +100,7 @@
 
 **这一节服务维护者。**
 
-### 3.1 后端（20 个模块）
+### 3.1 后端（24 个模块）
 
 | 模块 | 职责 |
 | --- | --- |
@@ -122,14 +122,19 @@
 | `backend/douyin.py` | 抖音解析 |
 | `backend/formats.py` | 清晰度 / 音轨归类 |
 | `backend/prompt_template.py` | 总结与导图的 prompt 模板 |
+| `backend/mindmap.py` | 思维导图的结构规则：深度 / 每支扇出 / 全图节点数上限 |
+| `backend/provider_config.py` | 平台 provider 的协议 / 端点 / 模型配置与客户端构造（ADR 0028） |
+| `backend/ratelimit.py` | 公开端点的速率闸门与并发闸门（ADR 0020 / 0021 / 0022） |
+| `backend/download_artifacts.py` | 下载产物的落盘与「用完即删」清理口径 |
+| `backend/cors_config.py` | 跨域白名单的解析与挂载：默认不开，`VIDDIGEST_ALLOWED_ORIGINS` 显式开口 |
 | `backend/logging_setup.py` | JSON 行日志与轮转 |
 | `backend/main.py` 之外的支撑 | 上述模块互不反向依赖：路由层 → 依赖层 / 编排层 → 数据层 → 支撑模块 |
 
 ### 3.2 前端
 
 - `frontend/src/api/`：8 个客户端模块，axios + 自建 SSE 解析。
-- `frontend/src/components/` + `frontend/src/views/`：共 54 个 `.vue`。页面级视图只有 `views/HomeView.vue`，`HistoryPage` / `CommunityPage` / `AdminPage` 实际放在 `components/` 里。
-- `frontend/src/router/index.ts`：4 条真实路径（`/`、`/history`、`/community`、`/admin`）。
+- `frontend/src/components/` + `frontend/src/views/`：共 54 个 `.vue`。页面级视图只有 `views/HomeView.vue`，`HistoryPage` / `CommunityPage` / `AdminPage` / `InviteCodesPage` 实际放在 `components/` 里。
+- `frontend/src/router/index.ts`：5 条真实路径（`/`、`/history`、`/community`、`/admin`、`/admin/invite-codes`）。
 - `frontend/src/stores/session.ts`：唯一的 store，持有登录态与管理员标志的内存镜像。回查 `/api/auth/me` 回 **401** 时（服务端不认这个 token）本地会话作废——localStorage 只是种子，服务端才是权威（ADR 0010）；**只有 401** 才作废，5xx 与网络故障是「问不着」不是「被拒」，那两种情况把人踢下线等于把一次抖动变成一次登出。
 - `frontend/src/lib/byok.ts`：用户自带 Key 的唯一真值出口。
 - `frontend/src/config/features.ts`：功能开关，`MEMBERSHIP_ENABLED = false`（会员入口按范围边界关着）。
@@ -258,7 +263,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
-| 1 | `backend: pytest` | 1520 条后端用例通过 |
+| 1 | `backend: pytest` | 1521 条后端用例通过 |
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
 | 4 | `frontend: npm test` | 538 条静态 / 契约断言通过 |
@@ -467,7 +472,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A1 | 44 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -vE 'venv\|tests' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
 | A2 | 32 | `get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3（端点级：不含 `backend/auth.py` 里 `require_admin` 自身的 `Depends(get_current_user)`，也不含 `backend/api_community.py` 顶部文档里提到的 `Depends(get_current_user)`） | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -vE 'venv\|tests' \| grep -vE 'backend[/\\]auth\.py' \| grep -vE 'api_community\.py:17' \| wc -l` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -c 'response_class=EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1520 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A4 | 1521 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 538 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 218 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 24 | `scripts/` 11 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
@@ -476,7 +481,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A10 | 7 张业务表 + 1 张 FTS5 虚表 + 6 条触发器（3 条 `*_fill_canonical` + 3 条 `videos_fts_*`） | 库里实际存在的建表 / 建虚表 / 建触发器对象（FTS5 自带的 4 张影子表 `videos_fts_data` / `_idx` / `_docsize` / `_config` 不计） | `backend/venv/Scripts/python.exe -c "import sqlite3;print(sqlite3.connect('backend/data/app.db').execute(\"select type,name from sqlite_master where name not like 'sqlite_%'\").fetchall())"` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
 | A11 | 29 | `docs/adr/` 下的文件数（28 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
 | A12 | 49 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
-| A13 | 70（`ready-for-agent` 标签）/ 83（全部工单） | 编码代理可领的工单数 / 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number,labels --jq '[.[] \| select(any(.labels[]; .name=="ready-for-agent"))] \| length'` 与 `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
+| A13 | 72（`ready-for-agent` 标签）/ 85（全部工单） | 编码代理可领的工单数 / 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number,labels --jq '[.[] \| select(any(.labels[]; .name=="ready-for-agent"))] \| length'` 与 `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A16 | 1800 | 覆盖闸门 TTL（秒） | `grep -n 'VIDEO_REGENERATE_TTL_SECONDS' backend/database.py` | `backend/database.py` | 常量可改 |
