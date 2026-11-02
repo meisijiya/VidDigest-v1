@@ -1,23 +1,10 @@
-import axios from 'axios'
+import { http } from '../lib/http.ts'
 
 import { toItems, toModelItem } from './models.ts'
 import type { ModelItem } from './models.ts'
 
 /**
- * 管理端接口。**需登录且是管理员**（服务端 `require_admin`）。
- *
- * 认证实例的写法与 `api/community.ts` 一致：token 从 `auth_token` 取，
- * 没有就不发 Authorization 头（而不是发一个空的 Bearer）。
- */
-function client() {
-  const token = localStorage.getItem('auth_token')
-  return axios.create({
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
-}
-
-/**
- * 管理端的一条清单记录 → camelCase：在公共字段之上多两个
+ * 管理端一条清单记录 → camelCase：在公共字段之上多两个
  * `enabled` 与 `sortOrder`。
  *
  * 与 `toModelItem` 分开而不是合成一个，是因为「全部行」是**管理视角**：
@@ -42,7 +29,7 @@ export function toAdminModelItem(raw: unknown): AdminModelItem {
 
 /** 一次请求 + 一次形状检查。两种出口共用，免得两条路各断各的。 */
 async function fetchAdminItems(map: (raw: unknown) => AdminModelItem): Promise<{ items: AdminModelItem[] }> {
-  const res = await client().get('/api/admin/models')
+  const res = await http.get('/api/admin/models')
   return { items: toItems(res.data, map) }
 }
 
@@ -234,7 +221,7 @@ export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' }: Admin
   AdminPage<AdminUser>
 > {
   const { limit, offset } = toLimitOffset(page, pageSize)
-  const res = await client().get('/api/admin/users', {
+  const res = await http.get('/api/admin/users', {
     params: { limit, offset, q: String(q || '').trim() },
   })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
@@ -253,7 +240,7 @@ export async function fetchAdminUsers({ page = 1, pageSize = 20, q = '' }: Admin
  */
 export async function fetchAdminCommunity({ page = 1, pageSize = 20 } = {}): Promise<AdminPage<AdminCommunityItem>> {
   const { limit, offset } = toLimitOffset(page, pageSize)
-  const res = await client().get('/api/admin/community', {
+  const res = await http.get('/api/admin/community', {
     params: { limit, offset },
   })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
@@ -282,7 +269,7 @@ export async function setUserQuota(
   userId: number,
   { parseLimit = null, chatLimit = null }: { parseLimit?: number | null; chatLimit?: number | null } = {},
 ): Promise<{ user: AdminUser; note: string | null; message: string }> {
-  const res = await client().post(`/api/admin/users/${userId}/quota`, {
+  const res = await http.post(`/api/admin/users/${userId}/quota`, {
     parse_limit: parseLimit ?? null,
     chat_limit: chatLimit ?? null,
   })
@@ -338,7 +325,7 @@ export async function updateAdminModel(
     throw new Error('没有任何要改的字段')
   }
 
-  const res = await client().patch(`/api/admin/models/${providerId}`, body)
+  const res = await http.patch(`/api/admin/models/${providerId}`, body)
   if (!res.data || !res.data.item) {
     throw new Error('模型清单更新响应形状不对')
   }
@@ -362,7 +349,7 @@ export async function createAdminUser({
   password,
   isAdmin = false,
 }: { email?: string; password?: string; isAdmin?: boolean } = {}): Promise<{ user: AdminUser }> {
-  const res = await client().post('/api/admin/users', {
+  const res = await http.post('/api/admin/users', {
     email,
     password,
     is_admin: !!isAdmin,
@@ -380,7 +367,7 @@ export async function createAdminUser({
  * 多带一个键会整个 422（其中包括 is_vip——VIP 不在后台可改范围）。
  */
 export async function setUserAdmin(userId: number, isAdmin: boolean): Promise<{ user: AdminUser }> {
-  const res = await client().patch(`/api/admin/users/${userId}`, {
+  const res = await http.patch(`/api/admin/users/${userId}`, {
     is_admin: !!isAdmin,
   })
   if (!res.data || !res.data.user || typeof res.data.user !== 'object') {
@@ -406,7 +393,7 @@ export interface TagGroup {
  * 信息丢了。maxTags 由服务端给出，是上限的唯一真值。
  */
 export async function fetchTagVocabulary(): Promise<{ maxTags: number; groups: TagGroup[] }> {
-  const res = await client().get('/api/admin/tags/vocabulary')
+  const res = await http.get('/api/admin/tags/vocabulary')
   const d = res.data || {}
   if (!Array.isArray(d.groups) || !d.groups.length) {
     throw new Error('标签词表响应形状不对')
@@ -436,7 +423,7 @@ export async function fetchTagVocabulary(): Promise<{ maxTags: number; groups: T
  * `item` 是**回读**结果，不是请求值的回显。
  */
 export async function updateCommunityTags(videoId: number, tags: string[]): Promise<{ item: AdminCommunityItem }> {
-  const res = await client().patch(`/api/admin/community/${videoId}`, {
+  const res = await http.patch(`/api/admin/community/${videoId}`, {
     tags: (tags || []).map(String),
   })
   if (!res.data || !res.data.item || typeof res.data.item !== 'object') {
@@ -452,7 +439,7 @@ export async function updateCommunityTags(videoId: number, tags: string[]): Prom
  * 库里没有任何外键指向 videos，这正是该语义成立的前提。
  */
 export async function deleteCommunityVideo(videoId: number): Promise<{ deleted: number }> {
-  const res = await client().delete(`/api/admin/community/${videoId}`)
+  const res = await http.delete(`/api/admin/community/${videoId}`)
   return { deleted: res.data?.deleted ?? videoId }
 }
 
@@ -467,7 +454,7 @@ export async function deleteCommunityVideo(videoId: number): Promise<{ deleted: 
  * 409 时抛出的 Error 附带 `.status` 与 `.blockers`。
  */
 export async function deleteAdminUser(userId: number): Promise<{ deleted: number }> {
-  const res = await client().delete(`/api/admin/users/${userId}`)
+  const res = await http.delete(`/api/admin/users/${userId}`)
   return { deleted: res.data?.deleted ?? userId }
 }
 
@@ -548,7 +535,7 @@ export async function fetchAdminInviteCodes({
   status = '',
 }: AdminInviteCodeQuery = {}): Promise<AdminPage<AdminInviteCode>> {
   const { limit, offset } = toLimitOffset(page, pageSize)
-  const res = await client().get('/api/admin/invite-codes', {
+  const res = await http.get('/api/admin/invite-codes', {
     params: { limit, offset, ...(status ? { status } : {}) },
   })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 后台接口返回的行没有运行时校验，any 只允许出现在这一层（读字段时逐个收窄）
@@ -575,7 +562,7 @@ export async function createAdminInviteCodes({
   expiresInHours?: number | null
   note?: string
 } = {}): Promise<{ items: AdminInviteCode[] }> {
-  const res = await client().post('/api/admin/invite-codes', {
+  const res = await http.post('/api/admin/invite-codes', {
     count,
     max_uses: maxUses,
     expires_in_hours: expiresInHours,
@@ -591,7 +578,7 @@ export async function createAdminInviteCodes({
 
 /** 作废一枚邀请码。**需管理员。** */
 export async function revokeAdminInviteCode(inviteId: number): Promise<{ item: AdminInviteCode }> {
-  const res = await client().post(`/api/admin/invite-codes/${inviteId}/revoke`)
+  const res = await http.post(`/api/admin/invite-codes/${inviteId}/revoke`)
   if (!res.data?.item || typeof res.data.item !== 'object') {
     throw new Error('作废邀请码响应形状不对')
   }

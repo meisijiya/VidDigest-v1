@@ -1,5 +1,6 @@
-import axios from 'axios'
 import type { AxiosResponse } from 'axios'
+
+import { http } from '../lib/http.ts'
 
 /**
  * 一条可下载的格式。
@@ -58,12 +59,12 @@ export interface ParseResponse {
 }
 
 export async function parseVideo(url: string): Promise<ParseResponse> {
-  const res = await axios.post('/api/parse', { url })
+  const res = await http.post('/api/parse', { url })
   return res.data
 }
 
 export async function downloadViaServer(url: string, formatId: string): Promise<AxiosResponse<Blob>> {
-  return await axios.post(
+  return await http.post(
     '/api/download',
     { url, format_id: formatId },
     {
@@ -73,6 +74,6 @@ export async function downloadViaServer(url: string, formatId: string): Promise<
 }
 
 export async function getDirectUrl(url: string, formatId: string): Promise<string> {
-  const res = await axios.post('/api/direct-url', { url, format_id: formatId })
+  const res = await http.post('/api/direct-url', { url, format_id: formatId })
   return res.data.data
 }

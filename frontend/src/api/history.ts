@@ -1,4 +1,4 @@
-import axios from 'axios'
+import { http } from '../lib/http.ts'
 
 /**
  * 列表里的一条历史记录。
@@ -72,13 +72,6 @@ export interface HistoryQuery {
   page_size?: number
 }
 
-function client() {
-  const token = localStorage.getItem('auth_token')
-  return axios.create({
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
-}
-
 /**
  * 解析历史列表（分页 + 关键词 / 标签 / 仅收藏 / AI 状态）。
  *
@@ -87,7 +80,7 @@ function client() {
  * 25 条，只是它们在第二页。
  */
 export async function fetchHistories(params: HistoryQuery = {}): Promise<HistoryList> {
-  const res = await client().get('/api/history', { params })
+  const res = await http.get('/api/history', { params })
   return res.data
 }
 
@@ -98,7 +91,7 @@ export async function fetchHistories(params: HistoryQuery = {}): Promise<History
  * 用户读起来是「这个筛选不生效」。
  */
 export async function fetchHistoryFacets(): Promise<HistoryFacet[]> {
-  const res = await client().get('/api/history/facets')
+  const res = await http.get('/api/history/facets')
   return res.data.items || []
 }
 
@@ -120,7 +113,7 @@ export async function deleteHistory(
   { force = false }: { force?: boolean } = {},
 ): Promise<DeleteHistoryResult> {
   try {
-    await client().delete(`/api/history/${id}`, { params: { force } })
+    await http.delete(`/api/history/${id}`, { params: { force } })
     return { refused: false }
   } catch (e) {
     const err = e as { response?: { status?: number; data?: { detail?: { code?: string; message?: string } } } }
@@ -138,7 +131,7 @@ export async function deleteHistory(
  * 翻转在网络重试下会把结果反过来：点一下收藏成功，重试一次就变成取消了。
  */
 export async function setHistoryFavorite(id: number, isFavorite: boolean): Promise<void> {
-  await client().patch(`/api/history/${id}/favorite`, { is_favorite: isFavorite })
+  await http.patch(`/api/history/${id}/favorite`, { is_favorite: isFavorite })
 }
 
 /**
@@ -148,13 +141,13 @@ export async function setHistoryFavorite(id: number, isFavorite: boolean): Promi
  * 中途失败会留下一半删一半没删的列表，而用户看不出是哪一半。
  */
 export async function clearHistories({ force = false }: { force?: boolean } = {}): Promise<unknown> {
-  const res = await client().delete('/api/history', { params: { force } })
+  const res = await http.delete('/api/history', { params: { force } })
   return res.data
 }
 
 /** 获取单条历史完整内容 */
 export async function fetchHistoryDetail(id: number): Promise<HistoryDetail> {
-  const res = await client().get(`/api/history/${id}`)
+  const res = await http.get(`/api/history/${id}`)
   return res.data
 }
 
@@ -164,7 +157,7 @@ export async function fetchHistoryDetail(id: number): Promise<HistoryDetail> {
  * 不在这里吞异常：读不到要能被上游看见，而不是变成一个静默的空列表。
  */
 export async function fetchChatSession(url: string): Promise<ChatMessage[]> {
-  const res = await client().get('/api/history/chat', { params: { url } })
+  const res = await http.get('/api/history/chat', { params: { url } })
   return res.data.chat_history || []
 }
 
@@ -196,7 +189,7 @@ export async function saveHistory(payload: {
   subtitle_data?: object | null
 }): Promise<void> {
   try {
-    await client().post('/api/history/save', payload)
+    await http.post('/api/history/save', payload)
   } catch (err) {
     console.warn('[history] 保存解析历史失败：', err)
   }

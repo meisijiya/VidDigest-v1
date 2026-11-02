@@ -1,4 +1,4 @@
-import axios from 'axios'
+import { httpAnonymous } from '../lib/http.ts'
 
 /**
  * 平台厂商清单。**唯一**来源是服务端的 `GET /api/models`（工单 #13）。
@@ -87,6 +87,7 @@ export function toItems(data: unknown, map: (raw: unknown) => ModelItem = toMode
  * 「平台不支持自带 Key」。
  */
 export async function fetchPublicModelCatalog(): Promise<{ items: ModelItem[] }> {
-  const res = await axios.get('/api/models')
+  // 公开端点用**匿名**出口：token 发到用不上的地方只是扩大泄露面。
+  const res = await httpAnonymous.get('/api/models')
   return { items: toItems(res.data) }
 }

@@ -367,7 +367,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import TagFilterRow from './TagFilterRow.vue'
 import { tagsToQuery } from '../lib/tag-filter.ts'
-import { isLoggedIn } from '../api/auth.ts'
+import { isLoggedIn, isUnauthorized } from '../lib/http.ts'
 import { useSessionStore } from '../stores/session.ts'
 import {
   clearHistories,
@@ -432,16 +432,6 @@ const facetError = ref('')
  * 服务端真回了 401 也翻译成同一件事：给一个「去登录」的入口。
  */
 const needLogin = ref(false)
-
-/**
- * 这次失败是不是「服务端说没登录」。
- *
- * 只看状态码，不看错误文案：文案是给用户看的，改一次就飘一次。
- */
-function isUnauthorized(e: unknown): boolean {
-  const err = e as { response?: { status?: number } }
-  return err?.response?.status === 401
-}
 
 const hasFilters = computed(() => !!(activeQuery.value || activeTags.value.length || ai.value || favoriteOnly.value))
 
