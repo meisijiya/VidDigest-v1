@@ -14,9 +14,23 @@ const VUE = new URL('../src/components/VideoSummary.vue', import.meta.url)
 
 // nth: 第几次出现（1 起）。两条 SSE 流的 onQuota 文本完全相同，
 // 只靠字符串匹配区分不了「总结那条」和「追问那条」。
+//
+// W1 / W2 的锚点是 `applyQuotaEvent` 里那一行整体展开（ADR 0033 之后
+// 前端不再逐项挑字段：槽位与中文名都由服务端给）。原来那两条锚点写的是
+// `chat: d.chat ?? null,` / `parse: d.parse ?? null,`——那两行在 ADR 0033
+// 之后已经不存在，锚点失配，变异「未命中」而不是「存活」：装置坏了，
+// 不是守卫有牙。变异语义保持不变：把展开改成逐项挑字段，丢掉其中一种额度。
 const MUTATIONS = [
-  ['W1 applyQuotaEvent 丢掉 chat', 'chat: d.chat ?? null,', 'chat: null,'],
-  ['W2 applyQuotaEvent 丢掉 parse', 'parse: d.parse ?? null,', 'parse: null,'],
+  [
+    'W1 applyQuotaEvent 丢掉 chat',
+    'quotaInfo.value = { ...d, logged_in: true, unlimited: !!d.unlimited }',
+    'quotaInfo.value = { parse: d.parse, labels: d.labels, logged_in: true, unlimited: !!d.unlimited }',
+  ],
+  [
+    'W2 applyQuotaEvent 丢掉 parse',
+    'quotaInfo.value = { ...d, logged_in: true, unlimited: !!d.unlimited }',
+    'quotaInfo.value = { chat: d.chat, labels: d.labels, logged_in: true, unlimited: !!d.unlimited }',
+  ],
   ['W3 追问流摘掉 onQuota 接线', 'onQuota: applyQuotaEvent,', 'onQuota: null,', 2],
   ['W4 模板不再渲染 quotaLabel', '{{ quotaLabel }}', '{{ quotaText }}'],
   ['W5 模板不再绑定额度徽章样式', ':class="quotaBadgeClass"', ':class="quotaBadgeClassX"'],
