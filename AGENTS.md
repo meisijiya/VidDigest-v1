@@ -28,7 +28,7 @@ VidDigest —— 通用视频解析 / 下载 + AI 字幕总结工具。
 & 'C:\Program Files\Git\bin\bash.exe' ./init.sh
 ```
 
-它依次跑 11 件**真会失败**的事：后端 pytest（用 `backend\venv` 里的解释器，Windows 与 Linux 各一条路径，按存在性挑）、后端 compileall、**敏感内容扫描**（`scripts/check_secrets.py`，扫工作树 + 全部可达历史）、前端 `npm test`、前端**真挂载**测试（`npm run test:mount`）、前端**类型检查**（`npm run typecheck`）、前端**静态检查**（`npm run lint`）、前端**格式检查**（`npm run format:check`）、**引用一致性**（`scripts/check_refs.py`：源码注释与文档里的 ADR 编号、路径锚点必须指向真实存在的东西）、**门禁口径一致性**（`scripts/check_gate_consistency.py`：文档里写的关卡数必须等于 `init.sh` 真跑的关卡数）、**社区检索质量**（`scripts/eval/check_search_quality.py`：索引列集合与同步触发器的结构判定，加上固定语料上的 top-1 准确率、正文词召回、2 字词召回与零误召回）。
+它依次跑 12 件**真会失败**的事：后端 pytest（用 `backend\venv` 里的解释器，Windows 与 Linux 各一条路径，按存在性挑）、后端 compileall、**敏感内容扫描**（`scripts/check_secrets.py`，扫工作树 + 全部可达历史）、前端 `npm test`、前端**真挂载**测试（`npm run test:mount`）、前端**类型检查**（`npm run typecheck`）、前端**静态检查**（`npm run lint`）、前端**格式检查**（`npm run format:check`）、**引用一致性**（`scripts/check_refs.py`：源码注释与文档里的 ADR 编号、路径锚点必须指向真实存在的东西）、**门禁口径一致性**（`scripts/check_gate_consistency.py`：文档里写的关卡数必须等于 `init.sh` 真跑的关卡数）、**概念索引一致性**（`scripts/check_database_index.py`：`docs/TECHNICAL.md` §3.4 里 `database.py` 的每一段都接着下一段，每个顶层函数恰好属于一行，领域词都是 `GLOSSARY.md` 的词条）、**社区检索质量**（`scripts/eval/check_search_quality.py`：索引列集合与同步触发器的结构判定，加上固定语料上的 top-1 准确率、正文词召回、2 字词召回与零误召回）。
 单独调试时可以只跑其中一条，但**声称完成前跑的一定是 `./init.sh` 整条**，且要是本次跑出来的。
 
 ## 状态与交接：承接方是工程 skill
