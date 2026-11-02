@@ -113,6 +113,14 @@ _Avoid_：超级用户、运营、moderator
 **不封禁、不改角色**，VIP 也不在其中（仍只能由订单支付写入）。
 _Avoid_：运营后台、控制台、Dashboard
 
+## 付费
+
+**订单（Order）**：
+一次 VIP 购买在库里的一行。`order_no` 与 `stripe_session_id` 各有唯一约束，
+同一笔支付回调重复到达时靠它们判重。VIP 的到期时间**只能由支付完成写入**，
+管理后台改不了它。
+_Avoid_：交易、支付单、流水
+
 ## 会话
 
 **追问（Follow-up Question）**：

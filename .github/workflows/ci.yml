@@ -183,6 +183,7 @@ jobs:
         script:
           - scripts/mutation_auth_boundary.py
           - scripts/mutation_clean_url.py
+          - scripts/mutation_database_index.py
           - scripts/mutation_db_fixture_gate.py
           - scripts/mutation_download_paths.py
           - scripts/mutation_payment_webhook.py

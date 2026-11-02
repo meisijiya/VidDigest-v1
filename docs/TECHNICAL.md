@@ -40,7 +40,7 @@
 | 前端静态 / 契约断言 | 544 | `npm test`（A5） |
 | 前端挂载用例 | 229 | `npm run test:mount`（A6） |
 | 变异脚本 | 24（后端 20 + 前端 4） | 文件清单（A7） |
-| 门禁 | 11 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
+| 门禁 | 12 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
 | CI | 4 个 job 定义，展开 26 个实例 | `.github/workflows/ci.yml`（A9） |
 | 业务表 | 7 张 + 1 个 FTS5 虚表 + 6 个触发器 | 建表语句（A10） |
 | 公开端点限流 | 6 个端点按来源 IP 限速，每分钟 20 / 10 / 30 / 60 / 10 / 5 | `backend/ratelimit.py`（A19、ADR 0020） |
@@ -112,7 +112,7 @@
 | `backend/api_payment.py` | 订单、支付回调、VIP 判定 |
 | `backend/admin_api.py` | 管理后台：用户、社区、模型清单、标签词表 |
 | `backend/auth.py` | JWT、bcrypt、三个鉴权依赖 |
-| `backend/database.py` | SQLite 数据层：建表、迁移、额度、仲裁、检索 |
+| `backend/database.py` | SQLite 数据层：建表、迁移、额度、仲裁、检索（13 段的分段索引见 §3.4，不按表拆，ADR 0035） |
 | `backend/summarizer.py` | 字幕提取 + 模型调用（总结 / 导图 / 问答 / ASR 兜底） |
 | `backend/video_claim.py` | 解析占位权与覆盖闸门：谁能调模型、谁只能等着；退出上下文即释放（ADR 0031） |
 | `backend/sse_events.py` | SSE `error` 事件的唯一构造点：六键固定形状（ADR 0034） |
@@ -153,6 +153,34 @@
 | 用户自带凭据 | `frontend/src/lib/byok.ts` | `getPublicState()` 的返回类型里**结构上就没有 key 这个键** |
 
 **判据**：给一个功能名，读者能在 10 秒内定位到要改的文件；并能说出某个状态的事实源在哪、谁只是它的副本。
+
+### 3.4 `database.py` 的概念索引
+
+`backend/database.py` 在一个文件里放了 113 个顶层函数。它不按表拆开，是因为
+63 个名字被 52 个测试文件与路由层导入——拆开的代价落在每一次 import 上，
+而收益只是「导航」，导航靠下面这张表就够了（ADR 0035）。
+
+表按**概念**切，每行给**起止函数名**而不是行号：行号会漂，函数名不会。
+相邻两行首尾相接，因此**每个顶层函数恰好属于一行**——新增函数不登记这一行，
+门禁第 12 关（`scripts/check_database_index.py`）就红。
+
+| 段 | 起止函数（含两端） | 领域词 | 这一段负责什么 |
+| --- | --- | --- | --- |
+| `连接与并发` | `get_connection_generation` → `get_db` | — | 线程本地连接、活跃连接登记与退出清理；`get_db` 是全仓 34 处的唯一入口 |
+| `建表（DDL 唯一出处）` | `init_db` → `init_db` | — | 226 行的建表函数：所有 `CREATE TABLE` / `CREATE INDEX` / 触发器只在这里出现 |
+| `迁移` | `_migrate_invite_codes_table` → `_migrate_history_favorite_column` | — | 12 个 `_migrate_*`，每个自带「列在不在」判据；老库从任意历史版本升到当前 schema |
+| `社区检索索引` | `_video_search_index_columns` → `_create_video_search_index` | 社区视频 | FTS5 的 5 列与 3 个同步触发器（ADR 0030）；门禁第 11 关守的就是它 |
+| `投影、分页与标签 SQL` | `_decode_tags_text` → `_paginate` | — | 行 → 字典的投影、页码与每页条数的夹取，社区与历史共用 |
+| `社区条目` | `_split_tags` → `publish_video_card` | 社区视频 | 标签拆合与子句拼装、列表、标签词表、单条、发布 |
+| `社区检索` | `_fts_phrase` → `search_community_videos` | 社区视频 | BM25 排序检索 + 2 字词子串兜底 |
+| `用户与额度` | `get_user_by_email` → `refund_quota` | 额度种类 | 账号、VIP 判定、额度查询与增减；计数字段与上限来自 `backend/quota_kinds.py`（ADR 0033） |
+| `管理后台` | `_clamp_limit_offset` → `delete_video_record` | 管理后台 | 用户列表与单人详情、改额度、管理员标记、建号删号、社区审核（ADR 0012 / 0013） |
+| `订单` | `create_order` → `get_user_orders` | 订单 | 订单落库与支付完成；VIP 只能由支付写入，后台不碰 |
+| `解析历史与追问` | `_trim_parse_history` → `delete_parse_history` | 解析记录 | 1000 条滚动裁剪（收藏不裁剪）、追问的写入与成对读取、历史列表与筛选面 |
+| `视频占位与仲裁` | `_pending_is_stale` → `get_video_by_url` | 解析占位 | 唯一索引仲裁、TTL 过期判定、占位 / 完成 / 释放的底层原语（`backend/video_claim.py` 调它们） |
+| `邀请码` | `hash_invite_code` → `register_with_invite_code` | 邀请码 | 只存 sha256 摘要、脱敏回显、用满即失效、凭码注册（ADR 0023） |
+
+**判据**：说得出「改 X 该看哪一段」，并知道改完要重跑哪一关。
 
 ---
 
@@ -263,7 +291,7 @@
 bash ./init.sh          # 退出码 0 = 已验证
 ```
 
-`init.sh` 里真跑 11 关，顺序即执行顺序：
+`init.sh` 里真跑 12 关，顺序即执行顺序：
 
 | # | 关卡 | 它证明什么 |
 | --- | --- | --- |
@@ -278,6 +306,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 9 | `refs: ADR 与路径引用一致性` | 文档与注释里提到的 `ADR NNNN`、源码路径都还指得到 |
 | 10 | `gate: 关卡数口径一致性` | 文档里写的关卡数等于 `init.sh` 真跑的关卡数（真值从 `init.sh` 数，不硬编码） |
 | 11 | `eval: 社区检索质量` | 索引列集合与同步触发器的结构判定，加上固定语料上的 top-1 准确率、正文词召回、2 字词召回与零误召回 |
+| 12 | `index: database.py 概念索引` | 索引表相邻两行首尾相接，每个顶层函数恰好属于一行，领域词都是 `GLOSSARY.md` 里的词条 |
 
 **第 9、10 关守的是门禁自身。** 规约、决策记录、测试策略与源码注释之间互相指着，被改写时**没有任何既有用例会红**——用例断言的是行为，不是「你写的这句话还指得对」。这不是假设：本仓确实出现过源码注释指向一篇不相干的 ADR。
 
@@ -285,7 +314,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 
 ### 6.2 变异装置
 
-20 个脚本各破坏一条不变量（鉴权边界、链接归一、数据库夹具、支付回调、敏感内容扫描、门禁自身的引用与口径检查、社区检索的索引列与分词器……），断言关卡会转红。
+21 个脚本各破坏一条不变量（鉴权边界、链接归一、数据库夹具、支付回调、敏感内容扫描、门禁自身的引用与口径检查、概念索引的接续与领域词、社区检索的索引列与分词器……），断言关卡会转红。
 
 - **在 CI 矩阵里跑，不在 `init.sh` 里跑**：变异运行慢、会改写源码，且与并行开发冲突。
 - 每个脚本一个 job，互相独立、并行、互不污染（脚本自己按字节还原）。
@@ -479,12 +508,12 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A4 | 1538 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 544 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 229 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
-| A7 | 24 | `scripts/` 11 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
-| A8 | 11 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
-| A9 | 4 个 job 定义 / 26 个实例 | 1 个门禁 job + 1 个生产构建 job + 20 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
+| A7 | 25 | `scripts/` 12 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
+| A8 | 12 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
+| A9 | 4 个 job 定义 / 27 个实例 | 1 个门禁 job + 1 个生产构建 job + 21 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
 | A10 | 7 张业务表 + 1 张 FTS5 虚表 + 6 条触发器（3 条 `*_fill_canonical` + 3 条 `videos_fts_*`） | 库里实际存在的建表 / 建虚表 / 建触发器对象（FTS5 自带的 4 张影子表 `videos_fts_data` / `_idx` / `_docsize` / `_config` 不计） | `backend/venv/Scripts/python.exe -c "import sqlite3;print(sqlite3.connect('backend/data/app.db').execute(\"select type,name from sqlite_master where name not like 'sqlite_%'\").fetchall())"` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
-| A11 | 33 | `docs/adr/` 下的文件数（32 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
-| A12 | 53 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
+| A11 | 34 | `docs/adr/` 下的文件数（33 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
+| A12 | 54 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
 | A13 | 72（`ready-for-agent` 标签）/ 85（全部工单） | 编码代理可领的工单数 / 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number,labels --jq '[.[] \| select(any(.labels[]; .name=="ready-for-agent"))] \| length'` 与 `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
@@ -493,7 +522,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A18 | 55 / 8 / 27 | 前端 `.vue` 数 / `api/` 客户端数 / 后端 `.py` 模块数 | `find frontend/src -name '*.vue' \| wc -l`；`ls frontend/src/api/*.ts \| wc -l`；`ls backend/*.py \| wc -l` | 整个仓库 | 随文件增删 |
 | A19 | 20 / 10 / 30 / 60 / 10 / 5 | 六个公开端点的每分钟上限（解析 / 下载 / 直链 / 缩略图 / 登录 / 注册）；可用环境变量覆盖，0 表示不限流 | `grep -n 'VIDDIGEST_RATE_LIMIT' backend/ratelimit.py` | `backend/ratelimit.py`（ADR 0020） | 常量可改 |
 
-**两条口径说明**：①「11 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 26 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。③限流上限是「每个来源 IP 每个固定窗口」；计数在进程内，重启即清零，多实例部署时每个实例各算各的。
+**两条口径说明**：①「12 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 26 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。③限流上限是「每个来源 IP 每个固定窗口」；计数在进程内，重启即清零，多实例部署时每个实例各算各的。
 
 ---
 

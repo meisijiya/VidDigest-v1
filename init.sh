@@ -168,6 +168,19 @@ echo "=== eval: 社区检索质量（结构 + 召回） ==="
 "$PY" scripts/eval/check_search_quality.py
 RAN=$((RAN + 1))
 
+# 第 12 关：database.py 的概念索引不许漂。
+#
+# 为什么这一关存在：database.py 一个文件里 113 个顶层函数、63 个名字被外部导入，
+# 它不按表拆开（拆的代价落在 52 个测试文件的 import 面上），导航靠
+# docs/TECHNICAL.md §3.4 那张「概念 → 起止函数」的表。表和源码在两处，
+# 加了函数表不会自己动；本仓已有前例——check_refs.py 只看行号越界，
+# 指错了没人知道。这一关把「索引表漂移」变成门禁红：相邻两行必须首尾相接，
+# 于是每个顶层函数恰好属于一行，漏登一个新函数就报错。
+echo ""
+echo "=== index: database.py 概念索引与源码一致 ==="
+"$PY" scripts/check_database_index.py
+RAN=$((RAN + 1))
+
 if [ "$RAN" -eq 0 ]; then
   echo ""
   echo "ERROR: 一条检查都没真跑过。"
