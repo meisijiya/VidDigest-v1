@@ -42,24 +42,44 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import api_summarize
 import database
+import video_claim
 
 URL = "https://example.com/wait"
 
 
 # ── 工具 ────────────────────────────────────────────────────
 
-def claim(url, uid, title="", cover=""):
-    """跑一次 _claim_video，返回 (claim, row)。
+def claim(url, uid, title="", cover="", timeout=0.3, poll_interval=0.01):
+    """跑一次 acquire_claim，返回 outcome。
 
-    直接调私有函数而不是走 HTTP：这里要观察的是**轮询期间数据库被写了
+    直接调 module 而不是走 HTTP：这里要观察的是**轮询期间数据库被写了
     几次**，而 HTTP 层会把 summarize 自己的写入（额度、parse_history）
-    一起算进来，量不到目标。私有函数这一层才是轮询的真实边界。
+    一起算进来，量不到目标。module 这一层才是轮询的真实边界。
+
+    超时与间隔**显式传**：缺省时它们取 module 常量（调用时才读），
+    而这里要的是小值——生产的 30 秒等待没法写进用例。
     """
-    return asyncio.run(
-        api_summarize._claim_video(url, uid, title, cover)
-    )
+    async def scenario():
+        async with video_claim.acquire_claim(
+            url, uid, title, cover, timeout=timeout, poll_interval=poll_interval
+        ) as c:
+            return c.outcome
+    return asyncio.run(scenario())
+
+
+def claim_inside(url, uid, body, title="", cover="", timeout=0.3, poll_interval=0.01):
+    """在占位上下文**里面**跑 body，返回 body 的返回值。
+
+    占位是真的被占着的：退出上下文就还回去了。所以「占位期间那一行是
+    什么状态」这类断言只能写在上下文里面——写在外面只会看到「行没了」。
+    """
+    async def scenario():
+        async with video_claim.acquire_claim(
+            url, uid, title, cover, timeout=timeout, poll_interval=poll_interval
+        ) as c:
+            return body(c)
+    return asyncio.run(scenario())
 
 
 def writes_during(fn):
@@ -193,17 +213,14 @@ class TestWaiterDoesNotWrite:
         1 留的余量给真正需要写的那一次——还位之后接管，或探到与写入之间
         的竞态走的那一次，两者都合法。
         """
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 0.3)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
-
         stuck = make_user("stuck@example.com")
         assert database.reserve_video(URL, stuck)[0] == "reserved"
         waiter = make_user()
 
-        (result, writes, reads), = [writes_during(lambda: claim(URL, waiter))]
+        (outcome, writes, reads), = [writes_during(lambda: claim(URL, waiter))]
 
-        assert result[0] == "busy", (
-            f"占位者一直不出现，等待者应当超时退回去，实得 {result[0]}"
+        assert outcome == "busy", (
+            f"占位者一直不出现，等待者应当超时退回去，实得 {outcome}"
         )
         assert reads > 1, (
             f"前提不成立：只读了 {reads} 次，说明这个循环压根没在轮询——"
@@ -225,16 +242,17 @@ class TestWaiterDoesNotWrite:
         两者都会红，但报出来的数字不同——一条报次数、一条报速率，
         修的时候能立刻看出是次数问题还是速率问题。
         """
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 1.0)
-        # 间隔保持生产值 0.05 不动
+        # 间隔保持生产值 0.05 不动（只有等待上限缩到 1 秒）
 
         stuck = make_user("stuck@example.com")
         assert database.reserve_video(URL, stuck)[0] == "reserved"
         waiter = make_user()
 
-        (result, writes, reads), = [writes_during(lambda: claim(URL, waiter))]
+        (outcome, writes, reads), = [
+            writes_during(lambda: claim(URL, waiter, timeout=1.0, poll_interval=0.05))
+        ]
 
-        assert result[0] == "busy"
+        assert outcome == "busy"
         assert reads > 1, f"前提不成立：只读了 {reads} 次，循环没在轮询"
         # 1 秒 / 50ms = 20 轮。老实现是 20 次写；新实现是 0。
         # 上限 2 留余量给「该抢」的那一次写。
@@ -262,9 +280,6 @@ class TestPerRoundReclaimIsPreserved:
         waiting），等待者就会一路等到超时——而那条「等待者不写库」的
         断言仍会绿。两条一起才锁住这个能力。
         """
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 0.3)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
-
         dead = make_user("dead@example.com")
         assert database.reserve_video(URL, dead)[0] == "reserved"
         waiter = make_user()
@@ -272,16 +287,18 @@ class TestPerRoundReclaimIsPreserved:
         # 占位者进程死了：行还在 pending，但已经老到 TTL
         age_row(database.VIDEO_PENDING_TTL_SECONDS + 60)
 
-        (claim_result, _row), = [claim(URL, waiter)]
+        def body(c):
+            assert c.outcome == "owner", (
+                f"陈旧占位没被接管，等待者实得 {c.outcome}。"
+                "这会让死掉的占位把链接永久卡死——而只读探测优化掉写事务时，"
+                "最容易顺手丢的就是这条。"
+            )
+            # 断言写在占位上下文里面：退出上下文就还位了。
+            row = database.get_video_by_url(URL)
+            assert row["parsed_by"] == waiter, "接管之后 parsed_by 没换成等待者"
+            assert row["status"] == "pending", "接管的是别人的占位行，状态不该变"
 
-        assert claim_result == "owner", (
-            f"陈旧占位没被接管，等待者实得 {claim_result}。"
-            "这会让死掉的占位把链接永久卡死——而只读探测优化掉写事务时，"
-            "最容易顺手丢的就是这条。"
-        )
-        row = database.get_video_by_url(URL)
-        assert row["parsed_by"] == waiter, "接管之后 parsed_by 没换成等待者"
-        assert row["status"] == "pending", "接管的是别人的占位行，状态不该变"
+        claim_inside(URL, waiter, body)
 
     def test_waiter_takes_over_the_moment_placeholder_releases(self, db, make_user, monkeypatch):
         """核心语义：占位者中途还位，等待者**下一轮**就能成为首次解析者。
@@ -291,54 +308,54 @@ class TestPerRoundReclaimIsPreserved:
         靠的是行被真的删掉。分开测，因为实现上它们可能走不同分支
         （一个走 probe 的 stale 判定，一个走 row is None）。
         """
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 5.0)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
-
         owner = make_user("owner@example.com")
         waiter = make_user("waiter@example.com")
         assert database.reserve_video(URL, owner)[0] == "reserved"
 
-        # 等待者已经在等；占位者现在失败还位（删行）
-        async def _release_soon():
-            await asyncio.sleep(0.05)
-            assert database.release_video(URL, owner) == 1, (
-                "前提不成立：还位没删掉行，这条测的就不是「行没了」这条路径"
-            )
-            return await api_summarize._claim_video(URL, waiter)
+        async def scenario():
+            # 等待者已经在等；占位者现在失败还位（删行）。
+            # 放行必须**并发**发生——acquire_claim 的进入过程自己就 await，
+            # 所以这个任务能在等待期间跑起来。
+            async def release_soon():
+                await asyncio.sleep(0.05)
+                assert database.release_video(URL, owner) == 1, (
+                    "前提不成立：还位没删掉行，这条测的就不是「行没了」这条路径"
+                )
 
-        (claim_result, _row), = asyncio.run(_release_soon()),
+            releaser = asyncio.create_task(release_soon())
+            async with video_claim.acquire_claim(
+                URL, waiter, timeout=5.0, poll_interval=0.01
+            ) as c:
+                await releaser
+                assert c.outcome == "owner", (
+                    f"占位者还位之后等待者实得 {c.outcome}，实得 owner 才对。"
+                    "抢一次就睡的写法在这里会一路等到超时——"
+                    "而「等待者不写库」那条断言对它仍然是绿的。"
+                )
+                assert database.get_video_by_url(URL)["parsed_by"] == waiter
 
-        assert claim_result == "owner", (
-            f"占位者还位之后等待者实得 {claim_result}，实得 owner 才对。"
-            "抢一次就睡的写法在这里会一路等到超时——"
-            "而「等待者不写库」那条断言对它仍然是绿的。"
-        )
-        assert database.get_video_by_url(URL)["parsed_by"] == waiter
+        asyncio.run(scenario())
 
     def test_ready_row_is_reused_without_writing(self, db, make_user, monkeypatch):
-        """成品路径：零写事务，且拿到的行能真的重放出去。
+        """成品路径：零写事务，且那一行原样还在。
 
-        上半段钉住「复用不写库」，下半段钉住「复用拿到的行是对的」——
-        只断前者的话，一个返回空行的实现也能过，而调用方
-        `_replay_events(user, existing)` 拿 None 会直接炸。
+        上半段钉住「复用不写库」，下半段钉住「复用的内容还是社区里那一份」——
+        只断前者的话，一个恒返回 reuse 的实现也能过，而调用方重放时
+        拿到的会是空内容。
         """
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 0.3)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
-
         owner = make_user("owner@example.com")
         assert database.reserve_video(URL, owner)[0] == "reserved"
         assert database.complete_video(URL, summary_md="社区里那一份", tags=["编程"]) == 1
 
-        (result, writes, reads), = [writes_during(lambda: claim(URL, make_user()))]
+        (outcome, writes, reads), = [writes_during(lambda: claim(URL, make_user()))]
 
-        assert result[0] == "reuse", f"已有成品却没走复用，实得 {result[0]}"
+        assert outcome == "reuse", f"已有成品却没走复用，实得 {outcome}"
         assert reads >= 1, "前提不成立：一条都没读，测的不是复用路径"
         assert not writes, f"复用一条都写库了：{writes}，复用的成本必须是零"
-        assert result[1] is not None, (
-            "复用必须把行一起带回去：调用方要拿它重放事件，"
-            "返回 None 会在 _replay_events 里炸掉"
-        )
-        assert result[1]["summary_md"] == "社区里那一份", "复用拿到的不是那一份结果"
+        # 复用不交出所有权：那一行还在，内容还是社区里那一份。
+        row = database.get_video_by_url(URL)
+        assert row is not None, "复用之后那一行不见了"
+        assert row["summary_md"] == "社区里那一份", "复用拿到的不是那一份结果"
 
 
 # ── 竞态：探到与写入之间别人插进来 ──────────────────────────
@@ -353,9 +370,6 @@ class TestProbeThenWriteRace:
         漏了它，一个把 probe 的 claimable 直接当成 owner 的实现会
         在并发下让两个人同时调模型、同时扣额度——而所有单线程用例照样全绿。
         """
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 0.2)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
-
         thief = make_user("thief@example.com")
         waiter = make_user("waiter@example.com")
 
@@ -371,12 +385,12 @@ class TestProbeThenWriteRace:
                 )
             return real_reserve(url, user_id, title, cover)
 
-        monkeypatch.setattr(api_summarize, "reserve_video", stealing_reserve)
+        monkeypatch.setattr(video_claim, "reserve_video", stealing_reserve)
 
-        (result, _row), = [claim(URL, waiter)]
+        outcome = claim(URL, waiter, timeout=0.2)
 
-        assert result == "busy", (
-            f"别人抢走位置后等待者实得 {result}，实得 busy 才对。"
+        assert outcome == "busy", (
+            f"别人抢走位置后等待者实得 {outcome}，实得 busy 才对。"
             "当成 owner 会让两个人同时调模型、同时扣额度——"
             "而这个分支在单线程下不主动制造就永远走不到。"
         )

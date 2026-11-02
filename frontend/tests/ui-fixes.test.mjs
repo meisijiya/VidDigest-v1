@@ -143,8 +143,11 @@ describe('问题1 · 命中社区已有结果时自动展示，不扣额度', ()
   test('「零成本自动」这个前提在后端成立：reuse 在扣额度之前就 return', () => {
     // 这条不是前端断言，是把自动化的安全前提钉在测试里：
     // 删掉「reuse 直接 return」或把 consume_quota 提前，自动展示就会扣额度。
+    //
+    // 锚点跟着占位权 module 的形状走（ADR 0031）：reuse 的判定现在读
+    // `claim.outcome`，不再是路由里的裸字符串。
     const api = read('../../backend/api_summarize.py')
-    const reuseAt = api.indexOf('if claim == "reuse"')
+    const reuseAt = api.indexOf('claim.outcome == video_claim.CLAIM_REUSE')
     const consumeAt = api.indexOf('consume_quota(user["id"], "parse")')
     assert.ok(reuseAt > 0, '没找到 reuse 分支')
     assert.ok(consumeAt > 0, '没找到 consume_quota')

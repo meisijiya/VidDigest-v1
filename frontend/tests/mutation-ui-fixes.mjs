@@ -196,9 +196,9 @@ const MUTANTS = [
   {
     name: 'M11 复用分支后移到扣额度之后（自动展示会扣额度）',
     file: join(BE, 'api_summarize.py'),
-    from: '    if claim == "reuse":',
-    to: '    if claim == "nonexistent-reuse-check":',
-    expect: /consume_quota 出现在 reuse 分支之前/,
+    from: 'if claim.outcome == video_claim.CLAIM_REUSE:',
+    to: 'if claim.outcome == "nonexistent-reuse-check":',
+    expect: /consume_quota 出现在 reuse 分支之前|没找到 reuse 分支/,
   },
   {
     name: 'M12 handleOpenRecord 不再查社区（历史页自动展示永不触发）',

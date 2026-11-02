@@ -284,7 +284,7 @@ class TestFailedOverwriteKeepsTheOldContent:
     ):
         """闸门漏放一次，这个链接就**永远**覆盖不了了——而内容明明还在。
 
-        这是 finally 里那一句 _end_regenerate 的唯一见证：
+        这是 finally 里那一次放闸的唯一见证：
         删掉它，第一条（成功路径）照样绿，只有这条会红。
         """
         owner = make_user()

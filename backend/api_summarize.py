@@ -4,31 +4,27 @@ import asyncio
 import json
 import logging
 
-import time
 from collections.abc import AsyncIterable
+from contextlib import AsyncExitStack
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.sse import ServerSentEvent, EventSourceResponse
 from pydantic import BaseModel, SecretStr, field_validator
 
+import video_claim
 from auth import get_optional_user
 from credentials import CredentialError, UserCredential
 from database import (
-    acquire_regenerate_gate,
     append_chat_turn,
     check_quota_kind,
     complete_video,
     consume_quota,
     get_recent_chat_messages,
     get_video_by_url,
-    probe_video,
     QUOTA_KINDS,
     quota_limit,
     refund_quota,
     regenerate_video,
-    release_regenerate_gate,
-    release_video,
-    reserve_video,
 )
 from prompt_template import default_template_id, is_known_template, list_templates
 from tags import validate_tags
@@ -292,129 +288,9 @@ async def _run_in_thread(func, *args):
 # 不是报错，而是等占位者出结果后复用同一份——这正是票面承诺的
 # 「不管谁先解析，看到的总结都是同一份」。
 
-#: 后来者等待占位者出结果的上限（秒）。到点还没好就明确告诉他
-#: 「正在解析」，而不是占着一条连接无限期等下去。
-VIDEO_WAIT_TIMEOUT_SECONDS = 30.0
-#: 等待期间的轮询间隔。调大则复用方白等，调小则空转烧 CPU。
-VIDEO_POLL_INTERVAL_SECONDS = 0.05
-
-
-async def _claim_video(
-    video_url: str,
-    user_id: int,
-    video_title: str = "",
-    cover_url: str = "",
-):
-    """抢占解析权；抢不到就等它完成，等不到就退回去。
-
-    返回 ("owner", None) / ("reuse", row) / ("busy", None)。
-
-    **只有 "owner" 允许去调模型**——「只调一次模型」就落在这一个分支上。
-    等待者的循环每轮都重新抢：占位者中途失败并释放位置时，等待者会在
-    下一轮成为首次解析者，而不是卡在一个已经被还回去的位置上空等到超时。
-
-    `video_title` / `cover_url` 只在**抢到占位**那一刻起作用（工单 #17 第 2 项）：
-    趁自己建的行还没 ready 就把平台元数据写进去。复用与等待两条路不碰它们。
-
-    ## 为什么每轮不是直接调 reserve_video（工单 #19 第 1 项）
-
-    `reserve_video` 每次调用都是一个**写事务**：先 INSERT 让唯一索引裁决，
-    被拒了才另开事务重读。而这个循环每 50ms 跑一次——实测每个等待者
-    17 次写事务/秒，30 秒内 510 次，5 个等待者 2550 次。SQLite 是 WAL，
-    这些事务抢的是**同一把写锁**；争锁的代价由真正有活要干的人承担，
-    也就是占位者那几十秒后要 `complete_video` 写回结果的那一刻。
-
-    所以这里把「该不该抢」（只读，`probe_video`）与「去抢」（写，
-    `reserve_video`）拆开：轮询只读，判定需要抢时才花那一次写事务。
-    上面那条「每轮重新抢」的语义一字未改——`probe_video` 在还位后
-    会返回 `claimable`，于是等待者下一轮照样能成为首次解析者。
-
-    ⚠️ `probe_video` 返回 claimable **不等于**抢到了：读到「没人占」到
-    真正 INSERT 之间仍有竞态，那一段由 `reserve_video` 的唯一索引兜住。
-    两种可能（抢到 / 仍被别人占着）都必须在下面显式处理，不能假设。
-    """
-    deadline = time.monotonic() + VIDEO_WAIT_TIMEOUT_SECONDS
-    while True:
-        # 先只读地问一句：绝大多数轮次在这里就结束了，一个字节都没写。
-        state = probe_video(video_url)
-        if state == "ready":
-            # 复用不写库，但要拿到行去重放事件——单独读一次。
-            return "reuse", get_video_by_url(video_url)
-        if state == "claimable":
-            outcome, row = reserve_video(video_url, user_id, video_title, cover_url)
-            if outcome == "reserved":
-                return "owner", None
-            if outcome == "ready":
-                return "reuse", row
-            # 仍是 pending：探到与写入之间被别人抢走了，继续等下一轮。
-            # 这里**不能**当成 reserved 也不能当成 reuse——两条路都跳过
-            # 一次模型调用，而这一行还什么都没产出。
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return "busy", None
-        # await 而不是 time.sleep：这是 async 生成器，睡死了会卡住整个事件循环
-        await asyncio.sleep(min(VIDEO_POLL_INTERVAL_SECONDS, remaining))
-
-
-# ── 覆盖自己那一份（ADR 0007）──────────────────────────────
-#
-# 覆盖**不占位**：重新解析的那几十秒里旧内容仍然对所有人有效，把它改回
-# pending 会让复用者突然看到空白。代价是同一个作者可以并发发起两次覆盖、
-# 两次都调模型、两次都扣额度。闸门挡掉后一次。
-#
-# 这道闸门**曾经**是进程内的一个 `set[str]`（工单 #20 之前），于是它同时是
-# 一道部署硬约束：`--workers 2` 会把那一个 set 劈成两份互不可见的副本，
-# 两个请求各自看见空 set、都判定「可以覆盖」，然后两次调模型、两次扣额度、
-# 后写的那份覆盖先写的那份——**不报错、不告警**。
-#
-# 现在它是 `videos` 上的两列（`regenerating_by` / `regenerating_at`），抢锁是
-# 一条带条件的 UPDATE。SQLite 串行化写事务，跨进程同样只有一个能拿到。
-# 于是「后端必须单进程」从**部署约束**降级成 SQLite 的写入串行化这一条已知
-# 性质——横向扩容不再有顺序上的前提。详见 docs/adr/0015。
-#
-# 首次解析路径一直就是跨进程安全的（占位行在数据库里，跨进程可见）；现在
-# 两条路径用的是同一种机制：单条条件写 + 唯一裁决。
-async def _begin_regenerate(video_url: str, user_id: int):
-    """判定这次请求能不能覆盖，返回 (outcome, row)。
-
-    - "regenerate" 可以覆盖，旧内容保持原样直到新结果算完
-    - "forbidden" 这一行属于别人，直接拒绝（不调模型、不扣额度）
-    - "busy"     同一个链接已有一次覆盖在跑，再点一次只会白烧一遍额度
-    - "skip"     这一行还没 ready，压根没有可覆盖的东西，按首次解析走
-
-    抢锁本身是**一条带条件的 UPDATE**（`database.acquire_regenerate_gate`），
-    而 SQLite 串行化写事务 —— 所以两个 worker 同时进来时只有一个拿到
-    `rowcount == 1`。这就是跨进程的那道保证，不再依赖「后端只有一个进程」
-    这个部署事实。
-
-    前两次读仍然是读：它们要区分「不归我」和「没人占着」这两种 outcome，
-    而它们**不是**判据——判据在 UPDATE 的 WHERE 里，那一句把 status / parsed_by
-    / 锁是否过期一起判掉。所以这里不存在「先读后判」的窗口。
-    """
-    row = get_video_by_url(video_url)
-    if row is None or row.get("status") != "ready":
-        return "skip", row
-    if row.get("parsed_by") != user_id:
-        return "forbidden", row
-    if acquire_regenerate_gate(video_url, user_id):
-        return "regenerate", row
-    # 抢不到。重读一次来区分「别人占着」与「这一行刚被别人改掉 / 删了」——
-    # 两者要报的 outcome 不同，而只有重读能分。失败路径才多这一次读。
-    fresh = get_video_by_url(video_url)
-    if fresh is None or fresh.get("status") != "ready":
-        return "skip", fresh
-    if fresh.get("parsed_by") != user_id:
-        return "forbidden", fresh
-    return "busy", row
-
-
-def _end_regenerate(video_url: str, user_id: int) -> None:
-    """放掉覆盖闸门。必须与 _begin_regenerate 成对，且放在 finally 里。
-
-    `user_id` 不是摆设：`release_regenerate_gate` 的 WHERE 靠它判断「这个锁
-    还是不是我的」，过期后迟到醒来的持闸者不该把别人的锁清掉。
-    """
-    release_regenerate_gate(video_url, user_id)
+# 谁能调模型、谁只能等着，由 video_claim 决定（ADR 0031）：
+# 占位与覆盖闸门都在那个 module 里，退出上下文即释放——路由不再手写
+# 轮询顺序、等待超时与闸门配对。
 
 
 def _replay_events(user: dict, video: dict) -> list[ServerSentEvent]:
@@ -530,67 +406,71 @@ async def summarize_video(
     # 是因为模板 id 后面要跟着写进社区视频表那一行。
     template_id = req.summary_template or default_template_id()
 
-    # 覆盖自己的那一份（ADR 0007）。判定放在**抢占位之前**：
-    # 覆盖路径根本没有占位可言，先抢位再判断会凭空造出一行 pending。
-    regenerate = False
-    if req.overwrite:
-        outcome, _ = await _begin_regenerate(req.url, user["id"])
-        if outcome == "forbidden":
-            async for event in fail(_NOT_OWNER):
-                yield event
-            return
-        if outcome == "busy":
-            async for event in fail("这份总结正在重新解析中，请稍后再试"):
-                yield event
-            return
-        # "skip"：社区里没有可覆盖的成品，按首次解析正常走
-        regenerate = outcome == "regenerate"
-
-    # 社区里已有的结果：既不扣额度也不调模型，因此**不受额度限制**——
-    # 复用的成本是零，额度不该拦住「看别人已经解析好的东西」。
-    if not regenerate:
-        claim, existing = await _claim_video(
-            req.url, user["id"], req.video_title, req.cover_url
-        )
-        if claim == "reuse":
-            for event in _replay_events(user, existing):
-                yield event
-            return
-        if claim == "busy":
-            async for event in fail("这个视频正在解析中，请稍后再试"):
-                yield event
-            return
-
-    # 到这里我们可以调模型了（占位者，或覆盖自己那一份的作者）。
-    # 额度仍可能不够——占位必须还回去，否则这个链接会被一个注定失败的
-    # 请求永久卡住。覆盖路径没有占位可还。
-    #
-    # 自带凭据时**不查额度**：花的是用户自己的钱，平台没有理由拦他。
-    # 这条与「社区复用不查额度」是同一个道理——不是平台出的钱，就不是
-    # 平台的额度。
-    if not using_byok:
-        allowed, remaining, message = _check_quota_permission(user, "parse")
-        if not allowed:
-            if not regenerate:
-                release_video(req.url, user["id"])
-            async for event in fail(message, need_vip=True):
-                yield event
-            return
-
     # 额度是否已扣。扣了之后没走完流程就要还回去。
     quota_spent = False
-    # 那个占位**是不是已经结清了**——注意不是「结果有没有落库」。
-    #
-    # 它只驱动 finally 里那一次 release：没结清就把位置还回去，
-    # 留下一行 pending 等于这个链接从此解析不了。
-    # 已结清有两种：这一行被 complete_video 变成了 ready，
-    # 或者它已经不归我了（被别人完成、或被管理员删掉）。
-    # 退不退额度由 quota_spent 单独决定，两件事不要挤在同一根标志上——
-    # 原来这两件事共用一个 published，于是「没落库」被读成「位置还在我手上」，
-    # 落库失败时 finally 就替这条失败路径做了一次不该做的 release
-    # （工单 #17 第 3 项）。
-    placeholder_settled = False
+    # 占位与覆盖闸门由 video_claim 决定（ADR 0031）。这里用 AsyncExitStack
+    # 把两个上下文管起来：**退出即释放**——占位没落库就还位，闸门用完就放掉。
+    # 路由不再手写轮询顺序、等待超时与闸门配对。
+    stack = AsyncExitStack()
     try:
+        # 覆盖自己的那一份（ADR 0007）。判定放在**抢占位之前**：
+        # 覆盖路径根本没有占位可言，先抢位再判断会凭空造出一行 pending。
+        regenerate = False
+        if req.overwrite:
+            reg = await stack.enter_async_context(
+                video_claim.reclaim(req.url, user["id"])
+            )
+            if reg.outcome == video_claim.RECLAIM_FORBIDDEN:
+                async for event in fail(_NOT_OWNER):
+                    yield event
+                return
+            if reg.outcome == video_claim.RECLAIM_BUSY:
+                async for event in fail("这份总结正在重新解析中，请稍后再试"):
+                    yield event
+                return
+            # "skip"：社区里没有可覆盖的成品，按首次解析正常走
+            regenerate = reg.outcome == video_claim.RECLAIM_REGENERATE
+
+        # 社区里已有的结果：既不扣额度也不调模型，因此**不受额度限制**——
+        # 复用的成本是零，额度不该拦住「看别人已经解析好的东西」。
+        claim = None
+        if not regenerate:
+            claim = await stack.enter_async_context(
+                video_claim.acquire_claim(
+                    req.url, user["id"], req.video_title, req.cover_url
+                )
+            )
+            if claim.outcome == video_claim.CLAIM_REUSE:
+                existing = get_video_by_url(req.url)
+                if existing is None:
+                    # 探到「有成品」到读取之间那一行被删了（管理员删条目，
+                    # ADR 0013）。重放需要那一行——没有就明确报错，
+                    # 别拿 None 去重放。
+                    async for event in fail("这份总结没能保存到社区，请稍后重试"):
+                        yield event
+                    return
+                for event in _replay_events(user, existing):
+                    yield event
+                return
+            if claim.outcome == video_claim.CLAIM_BUSY:
+                async for event in fail("这个视频正在解析中，请稍后再试"):
+                    yield event
+                return
+
+        # 到这里我们可以调模型了（占位者，或覆盖自己那一份的作者）。
+        # 额度仍可能不够——占位必须还回去，否则这个链接会被一个注定失败的
+        # 请求永久卡住。覆盖路径没有占位可还。
+        #
+        # 自带凭据时**不查额度**：花的是用户自己的钱，平台没有理由拦他。
+        # 这条与「社区复用不查额度」是同一个道理——不是平台出的钱，就不是
+        # 平台的额度。
+        if not using_byok:
+            allowed, remaining, message = _check_quota_permission(user, "parse")
+            if not allowed:
+                async for event in fail(message, need_vip=True):
+                    yield event
+                return
+
         extractor = _get_extractor()
         subtitle_data = await _run_in_thread(extractor.extract, req.url)
 
@@ -705,9 +585,8 @@ async def summarize_video(
         if regenerate:
             # 覆盖的 WHERE 里带 parsed_by：判定在 SQL 里，不在调用方。
             # 返回 0 说明这行此刻不属于他（被并发改过、或本来就是别人的）。
-            # 直接报错收尾：placeholder_settled 保持假（覆盖路径本来就没有
-            # 占位可还），quota_spent 保持真让 finally 把额度退回去——
-            # 用户什么都没拿到，不该白付这一次。
+            # 直接报错收尾：闸门由上下文退出时放掉，quota_spent 保持真让
+            # finally 把额度退回去——用户什么都没拿到，不该白付这一次。
             if regenerate_video(
                 req.url,
                 user["id"],
@@ -721,31 +600,34 @@ async def summarize_video(
                 async for event in fail("重新解析没能写回社区，这份总结已被别人改动"):
                     yield event
                 return
-        elif complete_video(
-            req.url,
-            summary_md="".join(summary_parts),
-            mindmap_md=mindmap_md,
-            tags=tags_payload,
-            subtitle_text=full_text,
-            template=template_id,
-        ) == 0:
-            # 落库失败与覆盖失败同权：不能装作成功。
-            #
-            # 返回 0 只有两种可能：这一行不存在（管理员删了 pending 行），
-            # 或者它已经不是 pending（成了别人的成果）。两种情况下
-            # **这个位置都已经结清了**——虽然不是我们结的。所以不回填，
-            # 也不去 release：release 的 WHERE 只看 status='pending'，
-            # 此刻对这两行都是空操作；而「在这之后有人重新占位」的那一瞬间，
-            # 它就不再是空操作了。不拥有，就别去动它。
-            placeholder_settled = True
-            logger.warning("社区视频 %r 的占位已不在 pending 状态，结果未落库", req.url)
-            async for event in fail("这份总结没能保存到社区，请稍后重试"):
-                yield event
-            # quota_spent 保持真 → finally 把这一次扣减退回去。
-            # 用户看到的是一份完整总结，社区里却什么都没有，
-            # 让他白付这一次不成立。
-            return
-        placeholder_settled = True
+            # 覆盖**不占位**：没有位置要还，闸门由上下文退出时放掉。
+        else:
+            if complete_video(
+                req.url,
+                summary_md="".join(summary_parts),
+                mindmap_md=mindmap_md,
+                tags=tags_payload,
+                subtitle_text=full_text,
+                template=template_id,
+            ) == 0:
+                # 落库失败与覆盖失败同权：不能装作成功。
+                #
+                # 返回 0 只有两种可能：这一行不存在（管理员删了 pending 行），
+                # 或者它已经不是 pending（成了别人的成果）。两种情况下
+                # **这个位置都已经结清了**——虽然不是我们结的。所以不回填，
+                # 也不去 release：release 的 WHERE 只看 status='pending'，
+                # 此刻对这两行都是空操作；而「在这之后有人重新占位」的那一瞬间，
+                # 它就不再是空操作了。不拥有，就别去动它。
+                claim.settle()
+                logger.warning("社区视频 %r 的占位已不在 pending 状态，结果未落库", req.url)
+                async for event in fail("这份总结没能保存到社区，请稍后重试"):
+                    yield event
+                # quota_spent 保持真 → finally 把这一次扣减退回去。
+                # 用户看到的是一份完整总结，社区里却什么都没有，
+                # 让他白付这一次不成立。
+                return
+            # 结果已落库：位置结清，退出上下文时不再还位。
+            claim.settle()
 
         # 三项都已产出，扣费就此结清：此后即便客户端断流也不回滚。
         quota_spent = False
@@ -776,16 +658,11 @@ async def summarize_video(
                 event="error",
             )
     finally:
-        # 结果没能落进社区表就把位置还回去。只删 pending 行，
-        # 已经 ready 的社区内容永远不会被这一步碰到。
-        # 覆盖路径没有占位，也**不能**在这里 release：那一行是别人的成果
-        # （或作者自己的旧成果），删掉它等于用一次失败的覆盖抹掉社区内容。
-        if not placeholder_settled and not regenerate:
-            release_video(req.url, user["id"])
-        # 覆盖闸门必须无条件放掉，异常路径也不能漏——漏一次，
-        # 这个链接此后就再也覆盖不了了（而内容明明还在）。
-        if regenerate:
-            _end_regenerate(req.url, user["id"])
+        # 占位与覆盖闸门的释放（ADR 0031）：退出上下文即释放。
+        # 覆盖路径**不会**走到还位——那个上下文只在抢到闸门时才放闸，
+        # 那一行是别人的成果（或作者自己的旧成果），删掉它等于用一次
+        # 失败的覆盖抹掉社区内容。
+        await stack.aclose()
         # 唯一回滚点：except 分支和「客户端中途断开」共用它，不会重复退款。
         # 断流时抛的是 GeneratorExit / CancelledError，两者都继承 BaseException
         # 而非 Exception，上面的 except 抓不到——实测额度就停在扣减后的值。
