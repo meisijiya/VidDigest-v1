@@ -934,3 +934,31 @@ class TestQuotaEndpoint:
         uid = make_user(is_vip=True, vip_expire_at=FAR_FUTURE)
         r = asyncio.run(self._call({"id": uid}))
         assert r["unlimited"] is True and r["remaining"] == -1
+
+
+class TestClientDisconnectReleasesTheClaim:
+    """客户端中途断流：占位必须还回去。
+
+    不还回去的代价是永久性的——那一行永远停在 pending，这个链接从此
+    再也解析不了，后来的每个人都只能干等到超时。
+
+    这条守的是「生成器被**关闭**」这条路径：正常跑完时位置是落库结清的，
+    断流时什么都没落库，必须靠还位把位置交回去（ADR 0031）。
+    """
+
+    def test_placeholder_is_given_back_when_the_stream_is_cut(self, db, make_user, stub):
+        stub(has_subtitle=True)
+        uid = make_user()
+        url = "https://example.com/disconnect"
+
+        async def scenario():
+            gen = api_summarize.summarize_video(summarize_req(url), user={"id": uid})
+            await gen.__anext__()   # 第一块是 subtitle —— 此刻占位已经拿到
+            await gen.aclose()      # 客户端断流：生成器被关闭
+
+        asyncio.run(scenario())
+
+        assert database.get_video_by_url(url) is None, (
+            "断流后占位没有还回去——这一行会永远停在 pending，"
+            "这个链接从此解析不了"
+        )

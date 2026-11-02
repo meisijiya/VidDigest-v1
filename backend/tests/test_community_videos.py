@@ -25,6 +25,7 @@ import pytest
 
 import api_summarize
 import database
+import video_claim
 from seams import StubExtractor
 from seams import StubSummarizer as SeamStubSummarizer
 
@@ -623,8 +624,8 @@ class TestPlaceholderIsAlwaysReleased:
         造法：先手工占一个位（模拟一个卡住的占位者），再把等待上限调到很小。
         """
         s, _ = wire(monkeypatch)
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 0.05)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(video_claim, "VIDEO_WAIT_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(video_claim, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
         uid = make_user()
         db.reserve_video(URL, make_user("stuck@example.com"))
 
@@ -738,8 +739,8 @@ class TestConcurrentSameUrl:
         )
         ex = StubExtractor(full_text="字幕全文")
         wire(monkeypatch, s, ex)
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 20.0)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(video_claim, "VIDEO_WAIT_TIMEOUT_SECONDS", 20.0)
+        monkeypatch.setattr(video_claim, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
 
         a = make_user("a@example.com")
         b = make_user("b@example.com")
@@ -798,8 +799,8 @@ class TestConcurrentSameUrl:
         )
         ex = StubExtractor(full_text="字幕全文")
         wire(monkeypatch, s, ex)
-        monkeypatch.setattr(api_summarize, "VIDEO_WAIT_TIMEOUT_SECONDS", 20.0)
-        monkeypatch.setattr(api_summarize, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(video_claim, "VIDEO_WAIT_TIMEOUT_SECONDS", 20.0)
+        monkeypatch.setattr(video_claim, "VIDEO_POLL_INTERVAL_SECONDS", 0.01)
 
         a = make_user("a@example.com")
         b = make_user("b@example.com")

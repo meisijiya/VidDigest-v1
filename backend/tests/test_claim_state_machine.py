@@ -9,10 +9,12 @@
 |---|---|---|
 | 写事务里的正式抢占 | ``database.reserve_video`` | ``reserved`` / ``ready`` / ``pending`` |
 | 只读探测（等待者轮询） | ``database.probe_video`` | ``ready`` / ``claimable`` / ``waiting`` |
-| 覆盖闸门 | ``api_summarize._begin_regenerate`` | ``regenerate`` / ``forbidden`` / ``busy`` / ``skip`` |
+| 覆盖闸门 | ``video_claim._decide_reclaim`` | ``regenerate`` / ``forbidden`` / ``busy`` / ``skip`` |
 
-外加 ``api_summarize._claim_video``——它把 reserve 的三态**重新编码**成
-自己的 ``owner`` / ``reuse`` / ``busy``，是这套状态机对外的唯一出口。
+外加 ``video_claim._wait_for_claim``——它把 reserve 的三态**重新编码**成
+自己的 ``owner`` / ``reuse`` / ``busy``，是这套状态机对外的唯一出口
+（``video_claim.acquire_claim`` / ``video_claim.reclaim`` 是它的两个
+interface，ADR 0031）。
 
 只有拿到 ``reserved``（或 ``owner``）的人才允许去调模型。
 
@@ -66,10 +68,12 @@ from datetime import datetime, timedelta, timezone
 
 import api_summarize
 import database
+import video_claim
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATABASE_PY = os.path.join(BACKEND, "database.py")
 API_SUMMARIZE_PY = os.path.join(BACKEND, "api_summarize.py")
+VIDEO_CLAIM_PY = os.path.join(BACKEND, "video_claim.py")
 
 URL = "https://example.com/claim"
 
@@ -101,7 +105,32 @@ def read_source(path: str) -> str:
         return f.read()
 
 
-def outcome_literals(node):
+def module_constants(source: str) -> dict:
+    """模块级常量表：``NAME = "字面量"``。
+
+    为什么需要它：占位权 module 的 outcome 用具名常量表达（词汇只有一处
+    出处），而守卫要看见**常量真正的值**——否则改常量名下的字面量时，
+    集合判定只会说「读不出来」，等于没有守卫。
+
+    具名常量不是计算值：它在 import 时就定死了，读它等于读字面量。所以
+    「outcome 必须是字面量」这条判据对它是成立的。
+    """
+    tree = ast.parse(source)
+    consts: dict = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not isinstance(node.value, ast.Constant):
+            continue
+        if not isinstance(node.value.value, str):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                consts[target.id] = node.value.value
+    return consts
+
+
+def outcome_literals(node, consts: dict):
     """从一个 Return 的值表达式里取出 outcome 字面量。
 
     返回 ``(literals, opaque)``：
@@ -120,16 +149,21 @@ def outcome_literals(node):
         # 任何常量都是静态可判定的：字符串进 literals，
         # None / 数字 / 布尔不是 outcome，但也不该算「读不出来」。
         return ([node.value] if isinstance(node.value, str) else []), False
+    if isinstance(node, ast.Name):
+        # 具名常量：读它的值。读不出来才算 opaque（那是局部变量或别的）。
+        if node.id in consts:
+            return [consts[node.id]], False
+        return [], True
     if isinstance(node, ast.IfExp):
         # 三元两支都要收：probe_video 的最后一分支就是这个形状，
         # 只收 body 会把 "waiting" 漏掉——而漏报是守卫最坏的失败模式。
-        body, opaque_body = outcome_literals(node.body)
-        orelse, opaque_orelse = outcome_literals(node.orelse)
+        body, opaque_body = outcome_literals(node.body, consts)
+        orelse, opaque_orelse = outcome_literals(node.orelse, consts)
         return body + orelse, opaque_body or opaque_orelse
     if isinstance(node, (ast.Tuple, ast.List)):
         if not node.elts:
             return [], False
-        return outcome_literals(node.elts[0])
+        return outcome_literals(node.elts[0], consts)
     return [], True                         # Name / Call / Subscript / ...
 
 
@@ -153,10 +187,11 @@ def find_outcomes(source: str, func_name: str):
 
     literals: set = set()
     opaque: list = []
+    consts = module_constants(source)
     for sub in ast.walk(nodes[0]):
         if not isinstance(sub, ast.Return):
             continue
-        got, is_opaque = outcome_literals(sub.value)
+        got, is_opaque = outcome_literals(sub.value, consts)
         literals.update(got)
         if is_opaque:
             opaque.append(sub.lineno)
@@ -198,7 +233,16 @@ def age_pending(seconds: int, url: str = None) -> None:
 
 
 def begin_regenerate(url: str, user_id: int):
-    return asyncio.run(api_summarize._begin_regenerate(url, user_id))
+    """跑一次 reclaim，拿到 outcome。
+
+    闸门在**退出上下文时**放掉（ADR 0031），所以这个 helper 只能问
+    「判定成什么」，问不了「闸门还在不在我手上」。后者要在上下文里问——
+    见 ``test_own_row_twice_is_regenerate_then_busy``。
+    """
+    async def scenario():
+        async with video_claim.reclaim(url, user_id) as reg:
+            return reg.outcome
+    return asyncio.run(scenario())
 
 
 # ── 结构层：三条边的返回集 ────────────────────────────────────
@@ -234,25 +278,25 @@ class TestReturnSetsAreExactlyThese:
             "注意 claimable 与 reserved 语义不同，本就不该统一成一个字面量。"
         )
 
-    def test_begin_regenerate_returns_exactly_the_four_outcomes(self):
-        literals, _ = find_outcomes(read_source(API_SUMMARIZE_PY), "_begin_regenerate")
+    def test_reclaim_returns_exactly_the_four_outcomes(self):
+        literals, _ = find_outcomes(read_source(VIDEO_CLAIM_PY), "_decide_reclaim")
         assert literals == REGENERATE_OUTCOMES, (
-            "_begin_regenerate 的 outcome 集合变了。\n"
+            "覆盖闸门的 outcome 集合变了。\n"
             f"  约定: {sorted(REGENERATE_OUTCOMES)}\n"
             f"  实际: {sorted(literals)}\n"
             "四个态各有各的后果（放行覆盖 / 拒绝 / 拒绝且扣额度 / 改走首次解析）。"
         )
 
-    def test_claim_video_re_encodes_into_its_own_three_outcomes(self):
-        """`_claim_video` 是这套状态机对外的唯一出口，它也必须自带契约。
+    def test_claim_re_encodes_into_its_own_three_outcomes(self):
+        """`acquire_claim` 是这套状态机对外的唯一出口，它也必须自带契约。
 
         它返回的**不是** reserve 的三个字面量：抢到叫 ``owner`` 不叫
         ``reserved``，抢不到等超时叫 ``busy`` 不叫 ``pending``。
         这层重新编码是调用方唯一能看到的东西，钉住它才叫把状态机钉住。
         """
-        literals, _ = find_outcomes(read_source(API_SUMMARIZE_PY), "_claim_video")
+        literals, _ = find_outcomes(read_source(VIDEO_CLAIM_PY), "_wait_for_claim")
         assert literals == CLAIM_OUTCOMES, (
-            "_claim_video 的 outcome 集合变了。\n"
+            "acquire_claim 的 outcome 集合变了。\n"
             f"  约定: {sorted(CLAIM_OUTCOMES)}\n"
             f"  实际: {sorted(literals)}\n"
             "注意它与 RESERVE_OUTCOMES 故意不同名，别顺手改名去「统一」。"
@@ -268,8 +312,8 @@ class TestReturnSetsAreExactlyThese:
         for path, func_name in (
             (DATABASE_PY, "reserve_video"),
             (DATABASE_PY, "probe_video"),
-            (API_SUMMARIZE_PY, "_begin_regenerate"),
-            (API_SUMMARIZE_PY, "_claim_video"),
+            (VIDEO_CLAIM_PY, "_decide_reclaim"),
+            (VIDEO_CLAIM_PY, "_wait_for_claim"),
         ):
             _literals, opaque = find_outcomes(read_source(path), func_name)
             assert opaque == [], (
@@ -731,20 +775,21 @@ class TestStalenessIsConservative:
 
 # ── 覆盖闸门 ──────────────────────────────────────────────────
 
-class TestBeginRegenerateBehaviour:
+class TestReclaimBehaviour:
     """四个 outcome 各对应一条真实路径，一个都不能只靠结构层。"""
 
     def test_absent_row_is_skip(self, db, make_user):
         owner = make_user("owner@example.com")
-        outcome, row = begin_regenerate(URL + "/regen-none", owner)
+        url = URL + "/regen-none"
+        outcome = begin_regenerate(url, owner)
         assert outcome == "skip", f"没有行时该改走首次解析，实际 {outcome!r}"
-        assert row is None
+        assert database.get_video_by_url(url) is None
 
     def test_pending_row_is_skip(self, db, make_user):
         owner = make_user("owner@example.com")
         url = URL + "/regen-pending"
         database.reserve_video(url, owner)
-        outcome, _row = begin_regenerate(url, owner)
+        outcome = begin_regenerate(url, owner)
         assert outcome == "skip", (
             f"还没 ready 的行压根没有可覆盖的东西，实际 {outcome!r}"
         )
@@ -755,11 +800,11 @@ class TestBeginRegenerateBehaviour:
         url = URL + "/regen-foreign"
         database.reserve_video(url, owner)
         database.complete_video(url, summary_md="好了")
-        outcome, row = begin_regenerate(url, other)
+        outcome = begin_regenerate(url, other)
         assert outcome == "forbidden", (
             f"覆盖别人那一份必须直接拒绝，实际 {outcome!r}"
         )
-        assert row is not None
+        assert database.get_video_by_url(url) is not None
 
     def test_own_row_twice_is_regenerate_then_busy(self, db, make_user):
         owner = make_user("owner@example.com")
@@ -767,17 +812,23 @@ class TestBeginRegenerateBehaviour:
         database.reserve_video(url, owner)
         database.complete_video(url, summary_md="好了")
 
-        outcome, row = begin_regenerate(url, owner)
-        assert outcome == "regenerate", (
-            f"覆盖自己已完成的总结应放行，实际 {outcome!r}"
-        )
-        assert row is not None and row["status"] == database.VIDEO_STATUS_READY
+        async def scenario():
+            # 第一次：抢到闸门。**上下文不退出**，闸门就还在我手上。
+            async with video_claim.reclaim(url, owner) as first:
+                assert first.outcome == "regenerate", (
+                    f"覆盖自己已完成的总结应放行，实际 {first.outcome!r}"
+                )
+                row = database.get_video_by_url(url)
+                assert row is not None and row["status"] == database.VIDEO_STATUS_READY
+                # 第二次：闸门在我手上 → busy
+                async with video_claim.reclaim(url, owner) as second:
+                    assert second.outcome == "busy", (
+                        f"同一个链接已有一次覆盖在跑，第二次应报 busy，"
+                        f"实际 {second.outcome!r}——放行意味着同一个作者能并发"
+                        "发起两次覆盖、两次调模型、两次扣额度"
+                    )
 
-        second, _row2 = begin_regenerate(url, owner)
-        assert second == "busy", (
-            f"同一个链接已有一次覆盖在跑，第二次应报 busy，实际 {second!r}——"
-            "放行意味着同一个作者能并发发起两次覆盖、两次调模型、两次扣额度"
-        )
+        asyncio.run(scenario())
 
 
 # ── 守卫自查：扫描器本身有没有判别力 ──────────────────────────
