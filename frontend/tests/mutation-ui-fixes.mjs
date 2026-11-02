@@ -423,6 +423,25 @@ const MUTANTS = [
       '本地本来就没有 token：不发请求，也不碰 localStorage',
     ],
   },
+  {
+    // 401 判定收进 lib/http 之后，它自己成了唯一的判据。上面 M22 断的是
+    // **调用点**（还在不在翻译），这条断的是**判定本身**：判据从 401 改成
+    // 别的，服务端的 401 就不再被认成「token 不认了」。
+    //
+    // 没有这条的话，把 lib/http 的判定改坏只会表现为「用户莫名被登出」，
+    // 而没有任何一条用例会红。
+    name: 'M37 401 判定被改成别的（token 不认了也认不出来）',
+    file: join(FE, 'src/lib/http.ts'),
+    from: 'return e?.response?.status === 401 || e?.status === 401',
+    to: 'return e?.response?.status === 403 || e?.status === 403',
+    runner: 'vitest',
+    spec: 'tests/session-store.spec.mjs',
+    failedTests: ['401：顶栏回到未登录态，localStorage 里的 token 与用户一起清掉'],
+    keptGreen: [
+      '反向对照：500 是「问不着」不是「被拒」，会话必须留着',
+      '本地本来就没有 token：不发请求，也不碰 localStorage',
+    ],
+  },
 ]
 
 let killed = 0

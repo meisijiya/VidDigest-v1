@@ -38,7 +38,7 @@
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
 | 后端用例 | 1533 | `pytest --collect-only`（A4） |
 | 前端静态 / 契约断言 | 538 | `npm test`（A5） |
-| 前端挂载用例 | 218 | `npm run test:mount`（A6） |
+| 前端挂载用例 | 229 | `npm run test:mount`（A6） |
 | 变异脚本 | 24（后端 20 + 前端 4） | 文件清单（A7） |
 | 门禁 | 11 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
 | CI | 4 个 job 定义，展开 26 个实例 | `.github/workflows/ci.yml`（A9） |
@@ -134,6 +134,7 @@
 ### 3.2 前端
 
 - `frontend/src/api/`：8 个客户端模块，axios + 自建 SSE 解析。
+- `frontend/src/lib/http.ts`：HTTP 出口的唯一真值——凭据注入、401 判定、两种传输（axios / 原生 fetch）。带凭据的是 `http` / `httpFetch` / `httpStream`，**公开端点用 `httpAnonymous`**（不带 Authorization，ADR 0032）。
 - `frontend/src/components/` + `frontend/src/views/`：共 54 个 `.vue`。页面级视图只有 `views/HomeView.vue`，`HistoryPage` / `CommunityPage` / `AdminPage` / `InviteCodesPage` 实际放在 `components/` 里。
 - `frontend/src/router/index.ts`：5 条真实路径（`/`、`/history`、`/community`、`/admin`、`/admin/invite-codes`）。
 - `frontend/src/stores/session.ts`：唯一的 store，持有登录态与管理员标志的内存镜像。回查 `/api/auth/me` 回 **401** 时（服务端不认这个 token）本地会话作废——localStorage 只是种子，服务端才是权威（ADR 0010）；**只有 401** 才作废，5xx 与网络故障是「问不着」不是「被拒」，那两种情况把人踢下线等于把一次抖动变成一次登出。
@@ -146,7 +147,7 @@
 | 事实 | 唯一出处 | 其它地方怎么用 |
 | --- | --- | --- |
 | 当前是哪个页面 | `frontend/src/router/index.ts` 的 `meta.page` | `App.vue` 里的 `currentPage` 是它的派生状态，不是独立事实源 |
-| 登录态落盘 | `frontend/src/api/auth.ts` | `stores/session.ts` 只持内存镜像 |
+| 登录态落盘 | `frontend/src/lib/http.ts`（凭据）与 `frontend/src/api/auth.ts`（用户快照） | `stores/session.ts` 只持内存镜像 |
 | 用户自带凭据 | `frontend/src/lib/byok.ts` | `getPublicState()` 的返回类型里**结构上就没有 key 这个键** |
 
 **判据**：给一个功能名，读者能在 10 秒内定位到要改的文件；并能说出某个状态的事实源在哪、谁只是它的副本。
@@ -268,7 +269,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | 2 | `backend: compileall` | 后端全部模块可编译 |
 | 3 | `secrets: content-level scan` | 跟踪文件与可达 git 历史里没有凭据形态的字符串 |
 | 4 | `frontend: npm test` | 538 条静态 / 契约断言通过 |
-| 5 | `frontend: npm run test:mount` | 218 条挂载用例通过 |
+| 5 | `frontend: npm run test:mount` | 229 条挂载用例通过 |
 | 6 | `frontend: npm run typecheck` | `vue-tsc --noEmit` 无类型错误 |
 | 7 | `frontend: npm run lint` | ESLint 无告警 |
 | 8 | `frontend: npm run format:check` | Prettier 全部文件符合格式 |
@@ -475,7 +476,7 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -c 'response_class=EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
 | A4 | 1533 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
 | A5 | 538 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
-| A6 | 218 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
+| A6 | 229 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 24 | `scripts/` 11 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
 | A8 | 11 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
 | A9 | 4 个 job 定义 / 26 个实例 | 1 个门禁 job + 1 个生产构建 job + 20 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
