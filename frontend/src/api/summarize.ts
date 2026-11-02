@@ -47,13 +47,52 @@ export interface MindmapPayload {
   markdown: string
 }
 
-/** `error` 事件。 */
+/**
+ * `error` 事件。后端六个键**总是出现**（`backend/sse_events.py`，ADR 0034），
+ * 这里仍全部写成可选：本仓前端可能对着旧后端跑，而缺字段要能降级读。
+ */
 export interface SseErrorPayload {
   message: string
   need_login?: boolean
   need_vip?: boolean
-  reason?: string
+  /** 机器可读的原因。空串表示「没有细类」。 */
+  reason?: SseErrorReason
+  asr_reason?: string
   byok?: boolean
+}
+
+/**
+ * `reason` 的取值表——后端 `summarizer.FAIL_*` 与 `sse_events.QUOTA_EXHAUSTED`
+ * 的镜像。两边各一份是有意的：Python 常量不能被 TS 直接 import，
+ * 而前端若只写字符串字面量比较，拼错与新增取值都不会有人提示。
+ */
+export type SseErrorReason =
+  'no_subtitle_track' | 'subtitle_fetch_failed' | 'asr_not_configured' | 'asr_failed' | 'quota_exhausted' | ''
+
+/** 前端真正要分开处理的三类。 */
+export type SseErrorClass = 'no_subtitle' | 'quota_exhausted' | 'other'
+
+/**
+ * 按 `reason` 判类。
+ *
+ * 改造前这里是 `err.message.includes('没有可用的字幕')`——匹配中文文案，
+ * 而 `_subtitle_failure` 会产出三种前半句，那条 `includes` 只接得住第三种。
+ * **未知 reason 一律落进 `other`**：宁可照旧显示消息，也不静默当成成功。
+ */
+export function classifySseError(err: SseErrorPayload): SseErrorClass {
+  switch (err.reason ?? '') {
+    // 字幕四类都是「没有可用字幕」：ASR 兜底失败也属于同一件事，只是多一层原因
+    case 'no_subtitle_track':
+    case 'subtitle_fetch_failed':
+    case 'asr_not_configured':
+    case 'asr_failed':
+      return 'no_subtitle'
+    case 'quota_exhausted':
+      return 'quota_exhausted'
+    default:
+      // reason 缺失时靠 asr_reason 兜一次（旧后端的形状）
+      return (err.asr_reason ?? '') === '' ? 'other' : 'no_subtitle'
+  }
 }
 
 /**
@@ -96,7 +135,7 @@ export function createSseParser() {
 interface StreamOptions {
   /** 按事件名分派负载。 */
   route: (event: string, data: unknown) => void
-  onError?: (error: { message: string }) => void
+  onError?: (error: SseErrorPayload) => void
   onCancel?: () => void
   onDone?: () => void
 }
@@ -161,7 +200,15 @@ function streamSse(
       // 主动取消不算错误：走 onCancel，让调用方区分「用户停了」和「出错了」
       const e = err as { name?: string; message?: string }
       if (cancelled || e?.name === 'AbortError') onCancel?.()
-      else onError?.({ message: e?.message || '未知错误' })
+      else
+        onError?.({
+          message: e?.message || '未知错误',
+          need_login: false,
+          need_vip: false,
+          reason: '',
+          asr_reason: '',
+          byok: false,
+        })
     } finally {
       finish() // 断流 / 异常 / 取消都收尾，UI 不会永久停在 loading
     }
@@ -207,7 +254,7 @@ export interface SummaryCallbacks {
   onMindmap?: (data: MindmapPayload) => void
   onTags?: (data: string[]) => void
   onQuota?: (data: QuotaPayload) => void
-  onError?: (error: { message: string }) => void
+  onError?: (error: SseErrorPayload) => void
   onCancel?: () => void
   onDone?: () => void
 }
@@ -216,7 +263,7 @@ export interface SummaryCallbacks {
 export interface ChatCallbacks {
   onAnswer?: (token: string) => void
   onQuota?: (data: QuotaPayload) => void
-  onError?: (error: { message: string }) => void
+  onError?: (error: SseErrorPayload) => void
   onCancel?: () => void
   onDone?: () => void
 }

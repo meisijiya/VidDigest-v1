@@ -488,7 +488,7 @@ import type { ByokPublicState } from '../lib/byok.ts'
 import { marked } from 'marked'
 import { Transformer } from 'markmap-lib'
 import { Markmap } from 'markmap-view'
-import { summarizeVideo, chatWithVideo, fetchQuota, fetchSummaryTemplates } from '../api/summarize.ts'
+import { classifySseError, chatWithVideo, fetchQuota, fetchSummaryTemplates, summarizeVideo } from '../api/summarize.ts'
 import type { SseStream, SubtitlePayload, SummaryTemplate } from '../api/summarize.ts'
 import { fetchChatSession, saveHistory } from '../api/history.ts'
 import type { ChatMessage } from '../api/history.ts'
@@ -819,10 +819,15 @@ function startSummarize(overwrite = false) {
       },
       onError: (err) => {
         failed = true
-        if (err.message.includes('没有可用的字幕')) {
+        // 判类看 reason（ADR 0034），不看中文文案：无字幕有三种说法，
+        // 拿 `message.includes(...)` 只接得住其中一种。
+        const kind = classifySseError(err)
+        if (kind === 'no_subtitle') {
           noSubtitle.value = true
         } else {
           errorMsg.value = err.message
+          // 额度耗尽时手上的余量已经过期（并发扣减没扣成，数字早就变了）
+          if (kind === 'quota_exhausted') refreshQuota()
         }
       },
       onDone: () => {
@@ -929,6 +934,7 @@ async function handleChat() {
       onError: (err) => {
         failed = true
         chatAnswer.value = `错误：${err.message}`
+        if (classifySseError(err) === 'quota_exhausted') refreshQuota()
       },
       onDone: () => {
         // 断流 / 异常 / 主动取消都会走到这里（onDone 保证恰好一次）

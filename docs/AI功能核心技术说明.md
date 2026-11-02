@@ -231,7 +231,7 @@ BYOK 分支的端点校验不在 `__init__` 里，而在 `credentials.validate_b
 
 ⚠️ **`quota` 在 `summary*` 之前下发**（`api_summarize.py:612` vs `:638`）。额度是在真正调模型的那一刻扣的，扣完立刻推一次给前端——不是最后才结算。所以「前端先看到额度变了、再看到总结一点点长出来」是正常顺序，不是竞态。
 
-错误事件走独立分支，不在上面这条主线上：未登录 / 超限时发 `event: error` 带 `need_login` / `need_vip`，额度耗尽那条发的字段是 `{ message, reason }`（`reason: "quota_exhausted"`），**不带** `need_vip`。
+错误事件走独立分支，不在上面这条主线上，且只有一处构造（`backend/sse_events.py`，ADR 0034）：`event: error` 的负载**六个键总是出现**——`message`、`need_login`、`need_vip`、`reason`、`asr_reason`、`byok`，缺省分别是空串 / `false`。`reason` 是机器可读的那一层：字幕失败四类、额度耗尽 `quota_exhausted`，前端按它判类而不是匹配中文文案。
 
 复放已缓存结果的路径（不调模型）事件顺序一致：`subtitle → quota → summary → mindmap → tags → done`。
 

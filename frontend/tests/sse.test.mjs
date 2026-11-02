@@ -5,7 +5,7 @@
 import { test, describe, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createSseParser, summarizeVideo, chatWithVideo, fetchQuota } from '../src/api/summarize.ts'
+import { classifySseError, createSseParser, chatWithVideo, fetchQuota, summarizeVideo } from '../src/api/summarize.ts'
 
 /** 造一个能响应 AbortSignal 的假流，行为对齐真实 fetch + ReadableStream。 */
 function fakeStream(chunks, { signal, close = true } = {}) {
@@ -305,5 +305,49 @@ describe('fetchQuota', () => {
   test('非 2xx 时抛错，让调用方降级', async () => {
     globalThis.fetch = async () => new Response('nope', { status: 401 })
     await assert.rejects(() => fetchQuota())
+  })
+})
+
+/**
+ * `error` 事件的判类（ADR 0034）。
+ *
+ * 改造前这里是 `err.message.includes('没有可用的字幕')`——匹配中文文案。
+ * 而 `_subtitle_failure` 会产出三种前半句，那条 `includes` 只接得住第三种，
+ * 另外两种（「平台提供了字幕但没能取下来」「该视频没有字幕」）会被当成
+ * 普通错误显示。下面第一条用例就是拿这两种文案跑的。
+ */
+describe('classifySseError', () => {
+  test('无字幕的三种文案都判成 no_subtitle（改造前只接得住第三种）', () => {
+    const cases = [
+      ['该视频没有字幕，无法生成总结', 'no_subtitle_track'],
+      ['平台提供了字幕但没能取下来，无法生成总结', 'subtitle_fetch_failed'],
+      ['该视频没有可用的字幕，服务端未配置语音识别，无法生成总结', 'no_subtitle_track'],
+    ]
+    for (const [message, reason] of cases) {
+      assert.equal(classifySseError({ message, reason }), 'no_subtitle', `${message} 没被判成无字幕`)
+    }
+  })
+
+  test('反向对照：消息里带「字幕」字样但 reason 为空，仍是 other', () => {
+    // 判类看 reason，不看文案。否则这条守卫会随着一句文案的改写而越权。
+    assert.equal(classifySseError({ message: '字幕提取服务暂时不可用，请稍后重试', reason: '' }), 'other')
+  })
+
+  test('ASR 兜底没救回来也属于无字幕', () => {
+    assert.equal(classifySseError({ message: 'x', reason: 'asr_failed' }), 'no_subtitle')
+    assert.equal(classifySseError({ message: 'x', reason: 'asr_not_configured' }), 'no_subtitle')
+  })
+
+  test('reason 缺失但 asr_reason 有值（旧后端形状）仍判无字幕', () => {
+    assert.equal(classifySseError({ message: 'x', reason: '', asr_reason: 'asr_failed' }), 'no_subtitle')
+  })
+
+  test('额度耗尽单独一类', () => {
+    assert.equal(classifySseError({ message: '今日次数已用完', reason: 'quota_exhausted' }), 'quota_exhausted')
+  })
+
+  test('未知 reason 落进 other，不静默当成成功', () => {
+    assert.equal(classifySseError({ message: 'x', reason: 'brand_new_reason' }), 'other')
+    assert.equal(classifySseError({ message: 'x' }), 'other')
   })
 })

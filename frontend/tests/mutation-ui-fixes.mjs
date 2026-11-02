@@ -187,11 +187,14 @@ const MUTANTS = [
     expect: /列表没渲染封面/,
   },
   {
-    name: 'M10 额度面板只列一个计数器（拆分对用户不可见）',
+    name: 'M10 额度面板退回硬写一种计数器（拆分对用户不可见）',
     file: join(FE, 'src/components/AppHeader.vue'),
-    from: "['chat', '追问'],",
-    to: '',
-    expect: /没有同时列出解析与追问两个额度/,
+    // 改造前这里硬写 [['parse','解析'],['chat','追问']]；现在行由 lib/quota
+    // 依据服务端的 labels 构造。这条变异把「按 labels 渲染」换回一行硬写的
+    // 种类名——加第三种额度时面板会静默少一行，正是要挡的回归。
+    from: 'const quotaRows = computed(() => buildQuotaRows(props.quota))',
+    to: "const quotaRows = computed(() => [{ key: 'parse', label: '解析', text: '', exhausted: false }])",
+    expect: /面板不再从 lib\/quota 的 quotaRows 取行/,
   },
   {
     name: 'M11 复用分支后移到扣额度之后（自动展示会扣额度）',
@@ -442,6 +445,21 @@ const MUTANTS = [
       '本地本来就没有 token：不发请求，也不碰 localStorage',
     ],
   },
+  {
+    // 退回到「按中文文案判类」——ADR 0034 之前的样子。它只接得住三种
+    // 无字幕文案里的一种，而这三种在 `_subtitle_failure` 里是并列产出的。
+    name: 'M38 判类退回按中文文案（无字幕的另两种说法被当成普通错误）',
+    file: join(FE, 'src/api/summarize.ts'),
+    from: "  switch (err.reason ?? '') {",
+    to: '  switch (err.message) {',
+    // node runner 跑全部 tests/**/*.test.mjs，spec 字段对它无效
+    failedTests: [
+      '无字幕的三种文案都判成 no_subtitle（改造前只接得住第三种）',
+      'ASR 兜底没救回来也属于无字幕',
+      '额度耗尽单独一类',
+    ],
+    keptGreen: ['反向对照：消息里带「字幕」字样但 reason 为空，仍是 other', '未知 reason 落进 other，不静默当成成功'],
+  },
 ]
 
 let killed = 0
@@ -530,6 +548,14 @@ for (const m of MUTANTS) {
         out = (e.stdout || '') + (e.stderr || '')
         ran = 1
       }
+      // node 的失败行是 `  ✖ <用例名> (0.17ms)`。解析出来才能像 vitest 那样
+      // 声明「该转红的用例」与「反向对照必须保持绿」——没有它，node 变异
+      // 只能判「红没红」，反向对照就成了空话。
+      failedTests = stripAnsi(out)
+        .split('\n')
+        .map((l) => l.match(/✖\s+(.+?)(?:\s+\(\d+(?:\.\d+)?ms\))?$/))
+        .filter(Boolean)
+        .map((mm) => mm[1].trim())
       // 判据必须看**实际跑了多少条**：
       // 变异可能把源码改坏到测试导入失败，那不是「测试通过」。
       const mRan = out.match(/#\s*tests\s+(\d+)/) || out.match(/tests (\d+)/)
