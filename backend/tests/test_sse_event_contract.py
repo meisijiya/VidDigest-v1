@@ -2,7 +2,9 @@ r"""SSE 事件名的前后端契约守卫（工单 #39）。
 
 背景
 ----
-后端 `ServerSentEvent(event=...)` 共 **30 处**，分布在 4 个函数里；前端
+后端的事件帧有两类来源：`ServerSentEvent(event=...)` 直接构造（其余事件），
+以及 `sse_events.error_event(...)` 这个唯一构造点（`error`，ADR 0034）；
+前端
 `frontend/src/api/summarize.ts` 有两张路由表（`SUMMARY_ROUTES` /
 `CHAT_ROUTES`）加一个 `streamSse` 里的 `done` 独立分支。**两边没有任何
 机器可读的契约清单**，改一边忘了另一边没有任何东西会响。
@@ -29,7 +31,9 @@ catch、不写日志、UI 一点变化都没有。所以「后端加了事件忘
     summarize_video   done error mindmap quota subtitle summary tags   （7）
     chat_with_video   answer done error quota                          （4）
     _replay_events    done mindmap ownership quota subtitle summary tags（7）
-    fail（闭包）       error                                          （1）
+
+在 `error` 收口到构造点之前，它由 `summarize_video` 里的闭包 `fail()` 发出，
+扫描器把一个 `error` 归到 `fail` 名下；现在归到发起它的那个端点函数。
 
 只比全局并集会漏掉「给追问端点发了一个 summary 事件」这类错误——它在
 全局并集里完全合法，只在**逐端点**比对下才暴露。
@@ -59,13 +63,13 @@ catch、不写日志、UI 一点变化都没有。所以「后端加了事件忘
 （第一版探针扫的是 f-string 形态的 `event: x`，后端 0 命中——
 **「0 命中」与「文件里没这段代码」在输出上完全一样**，先证伪工具再信结论。）
 
-闭包 `fail()` 的归属
-------------------
-`fail` 是 `summarize_video` 内部的 async 闭包，它发的 `error` 会被
-`func_of` 归到 `fail` 而不是 `summarize_video`。这**不是** bug：
-`error` 本来就在 `SUMMARY_ROUTES` 里，两条判据都成立。本文件显式断言
-这个归属（`test_closure_is_reported_under_its_own_name`），免得哪天
-有人改扫描逻辑时它悄悄变了而没人知道。
+`error` 事件的构造点（ADR 0034）
+------------------------------
+`error` 不再手写 `ServerSentEvent`，而是 `sse_events.error_event(...)`。
+扫描器因此认两种形状：`ServerSentEvent(event=<字面量>)`，以及模块限定的
+`.error_event(...)` 调用（后者恒指 `error`）。只认前者会让扫描结果变成
+「后端从不发 error」——那时前端那条 error 路由会被判成死路由，
+守卫转而指着正确的代码说它错。
 """
 import ast
 import re
@@ -84,7 +88,6 @@ EXPECTED = {
     "chat_with_video": frozenset({"answer", "done", "error", "quota"}),
     "_replay_events": frozenset({
         "done", "mindmap", "ownership", "quota", "subtitle", "summary", "tags"}),
-    "fail": frozenset({"error"}),
 }
 
 #: 每条 SSE 流都以 done 收尾。它由 streamSse 的独立分支接住，不进路由表。
@@ -130,9 +133,16 @@ def backend_events_by_function(source: str) -> dict[str, set[str]]:
 
     found: dict[str, set[str]] = {}
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "ServerSentEvent"):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # `error` 事件由 `sse_events.error_event(...)` 构造（ADR 0034）：
+        # 它不出现 `event=` 字面量，只认 `ServerSentEvent` 会把它整批漏掉，
+        # 症状是「后端从不发 error」——比没有守卫更容易骗人。
+        if isinstance(func, ast.Attribute) and func.attr == "error_event":
+            found.setdefault(func_of(node), set()).add("error")
+            continue
+        if not (isinstance(func, ast.Name) and func.id == "ServerSentEvent"):
             continue
         for kw in node.keywords:
             if kw.arg == "event" and isinstance(kw.value, ast.Constant) \
@@ -204,15 +214,34 @@ class TestBackendSendsExactlyWhatIsRegistered:
             f"  各自发的事件：{ {k: sorted(v) for k, v in found.items() if k in strays} }\n"
             "修法：登记进 EXPECTED，并给它指定 ENDPOINT_ROUTE 里的路由表。")
 
-    def test_closure_is_reported_under_its_own_name(self):
-        """`fail` 是 summarize_video 内的闭包，它归自己而不是外层。
+    def test_error_event_calls_count_as_the_error_event(self):
+        """`sse_events.error_event(...)` 必须被认成发了一条 `error`（ADR 0034）。
 
-        钉住「归属到最近一层函数」这个决定：改成归属最外层时本条会红。
+        改造前 error 由 11 处 `ServerSentEvent(event="error")` 手写；收成唯一
+        构造点之后，只认 `ServerSentEvent` 的扫描器会看到「后端从不发 error」，
+        于是前端的 error 路由被误判成死路由——守卫反过来指着正确的代码说它错。
         """
         found = backend_events_by_function(read_source(API_SUMMARIZE))
-        assert found.get("fail") == {"error"}, (
-            f"闭包 fail 的归属变了：{sorted(found.get('fail', set()))}\n"
-            "它应当归到自己名下（EXPECTED['fail']），而不是 summarize_video")
+        assert found.get("summarize_video", set()) >= {"error"}, (
+            f"summarize_video 的 error 事件没被认出来：{sorted(found.get('summarize_video', set()))}")
+        assert found.get("chat_with_video", set()) >= {"error"}, (
+            f"chat_with_video 的 error 事件没被认出来：{sorted(found.get('chat_with_video', set()))}")
+
+    def test_scanner_recognises_the_constructor_call(self):
+        """扫描器正例：模块限定的 `x.error_event(...)` 也算一条 error。"""
+        synthetic = (
+            "import sse_events\n"
+            "def g():\n"
+            "    yield sse_events.error_event('boom', need_vip=True)\n"
+        )
+        assert backend_events_by_function(synthetic) == {"g": {"error"}}, \
+            backend_events_by_function(synthetic)
+
+    def test_the_ad_hoc_helper_is_gone(self):
+        """`fail()` 那个闭包已删（ADR 0034）：它的存在意味着两条构造路径。"""
+        assert "async def fail(" not in read_source(API_SUMMARIZE), (
+            "api_summarize 里又出现了本地的 fail() 辅助函数——"
+            "error 事件只能从 sse_events.error_event 出来")
 
     def test_scanner_finds_every_registration_form(self):
         """扫描器正例：关键字参数、空格变体都能认出。

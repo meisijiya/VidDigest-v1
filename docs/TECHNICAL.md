@@ -36,16 +36,16 @@
 | REST 端点 | 44 | 路由装饰器计数（A1） |
 | 挂鉴权依赖的端点 | 32（`get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3） | 依赖注入计数（A2） |
 | SSE（流式）端点 | 2（`/api/summarize`、`/api/chat`） | `EventSourceResponse` 路由（A3） |
-| 后端用例 | 1530 | `pytest --collect-only`（A4） |
-| 前端静态 / 契约断言 | 538 | `npm test`（A5） |
+| 后端用例 | 1538 | `pytest --collect-only`（A4） |
+| 前端静态 / 契约断言 | 544 | `npm test`（A5） |
 | 前端挂载用例 | 229 | `npm run test:mount`（A6） |
 | 变异脚本 | 24（后端 20 + 前端 4） | 文件清单（A7） |
 | 门禁 | 11 关，真值在 `init.sh` | `bash ./init.sh`（A8） |
 | CI | 4 个 job 定义，展开 26 个实例 | `.github/workflows/ci.yml`（A9） |
 | 业务表 | 7 张 + 1 个 FTS5 虚表 + 6 个触发器 | 建表语句（A10） |
 | 公开端点限流 | 6 个端点按来源 IP 限速，每分钟 20 / 10 / 30 / 60 / 10 / 5 | `backend/ratelimit.py`（A19、ADR 0020） |
-| 设计决策 | 32 篇 ADR（31 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
-| 受管理的 Markdown | 52 个 | `git ls-files '*.md'`（A12） |
+| 设计决策 | 33 篇 ADR（32 篇生效，1 篇已被取代） | [`docs/adr/`](adr/)（A11） |
+| 受管理的 Markdown | 53 个 | `git ls-files '*.md'`（A12） |
 | 编码代理的工单 | 85 条（全部关闭） | `gh issue list --state all --limit 200 --json labels`（A13） |
 
 ### 1.2 两条主线
@@ -100,7 +100,7 @@
 
 **这一节服务维护者。**
 
-### 3.1 后端（26 个模块）
+### 3.1 后端（27 个模块）
 
 | 模块 | 职责 |
 | --- | --- |
@@ -115,6 +115,7 @@
 | `backend/database.py` | SQLite 数据层：建表、迁移、额度、仲裁、检索 |
 | `backend/summarizer.py` | 字幕提取 + 模型调用（总结 / 导图 / 问答 / ASR 兜底） |
 | `backend/video_claim.py` | 解析占位权与覆盖闸门：谁能调模型、谁只能等着；退出上下文即释放（ADR 0031） |
+| `backend/sse_events.py` | SSE `error` 事件的唯一构造点：六键固定形状（ADR 0034） |
 | `backend/quota_kinds.py` | 额度种类的注册表：计数字段、日期字段、上限常量、单人覆盖列与中文名（ADR 0033） |
 | `backend/credentials.py` | 用户自带凭据的解析与脱敏 |
 | `backend/model_catalog.py` | 模型清单表与默认模型 |
@@ -475,21 +476,21 @@ bash ./init.sh          # 退出码 0 = 已验证
 | A1 | 44 | 非测试 Python 里的 FastAPI 路由装饰器计数 | `grep -rnE '@(app\|router)\.(get\|post\|put\|delete\|patch)' backend --include=*.py \| grep -vE 'venv\|tests' \| wc -l` | `backend/main.py` 等路由模块 | 随路由增删 |
 | A2 | 32 | `get_current_user` 15 + `require_admin` 14 + `get_optional_user` 3（端点级：不含 `backend/auth.py` 里 `require_admin` 自身的 `Depends(get_current_user)`，也不含 `backend/api_community.py` 顶部文档里提到的 `Depends(get_current_user)`） | `grep -rnE 'Depends\((get_current_user\|require_admin\|get_optional_user)\)' backend --include=*.py \| grep -vE 'venv\|tests' \| grep -vE 'backend[/\\]auth\.py' \| grep -vE 'api_community\.py:17' \| wc -l` | `backend/auth.py` + 各路由模块 | 随依赖增减 |
 | A3 | 2 | 返回 `EventSourceResponse` 的路由 | `grep -c 'response_class=EventSourceResponse' backend/api_summarize.py` | `backend/api_summarize.py` | 随流式端点增删 |
-| A4 | 1530 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
-| A5 | 538 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
+| A4 | 1538 | pytest 收集到的用例数 | `cd backend && ./venv/Scripts/python.exe -m pytest tests -q --collect-only` | `backend/tests/` | 每次加删用例 |
+| A5 | 544 | node:test 断言数 | `cd frontend && npm test` | `frontend/tests/*.test.mjs` | 每次加删断言 |
 | A6 | 229 | vitest 用例数 | `cd frontend && npm run test:mount` | `frontend/tests/*.spec.mjs` | 每次加删用例 |
 | A7 | 24 | `scripts/` 11 + `backend/tests/` 9 + `frontend/tests/` 4 | `ls scripts/mutation_*.py backend/tests/mutation_*.py frontend/tests/mutation*` | 同左 + `.github/workflows/ci.yml` 的矩阵 | 随脚本增删 |
 | A8 | 11 | `init.sh` 真跑的关卡数（真值由脚本从 `init.sh` 数出） | `bash ./init.sh` 的收尾行；`backend/venv/Scripts/python.exe scripts/check_gate_consistency.py` | `init.sh` | 改 `init.sh` 即改 |
 | A9 | 4 个 job 定义 / 26 个实例 | 1 个门禁 job + 1 个生产构建 job + 20 个后端变异实例 + 4 个前端变异实例 | 读 `.github/workflows/ci.yml` 的矩阵 | `.github/workflows/ci.yml` | 工作流改则改 |
 | A10 | 7 张业务表 + 1 张 FTS5 虚表 + 6 条触发器（3 条 `*_fill_canonical` + 3 条 `videos_fts_*`） | 库里实际存在的建表 / 建虚表 / 建触发器对象（FTS5 自带的 4 张影子表 `videos_fts_data` / `_idx` / `_docsize` / `_config` 不计） | `backend/venv/Scripts/python.exe -c "import sqlite3;print(sqlite3.connect('backend/data/app.db').execute(\"select type,name from sqlite_master where name not like 'sqlite_%'\").fetchall())"` | `backend/database.py`、`backend/model_catalog.py` | 迁移则改 |
-| A11 | 32 | `docs/adr/` 下的文件数（31 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
-| A12 | 52 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
+| A11 | 33 | `docs/adr/` 下的文件数（32 篇生效 + 1 篇已被取代） | `ls docs/adr/*.md \| wc -l` | `docs/adr/` | 随决策增补 |
+| A12 | 53 | 版本库里受管理的 Markdown 文件数 | `git ls-files '*.md' \| wc -l` | 整个仓库 | 随文件增删 |
 | A13 | 72（`ready-for-agent` 标签）/ 85（全部工单） | 编码代理可领的工单数 / 工单总数（关 + 开） | `gh issue list --state all --limit 200 --json number,labels --jq '[.[] \| select(any(.labels[]; .name=="ready-for-agent"))] \| length'` 与 `gh issue list --state all --limit 200 --json number --jq 'length'` | GitHub Issues | 工单增删 |
 | A14 | 解析 3 / 追问 10 | 每日额度上限，可由环境变量覆盖 | `grep -n 'DAILY_PARSE_LIMIT\|DAILY_CHAT_LIMIT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A15 | 1000 / 20 | 解析历史保留条数 / 单页条数 | `grep -n 'MAX_PARSE_HISTORY_PER_USER\|HISTORY_PAGE_SIZE_DEFAULT' backend/database.py` | `backend/database.py` | 常量可改 |
 | A16 | 1800 | 覆盖闸门 TTL（秒） | `grep -n 'VIDEO_REGENERATE_TTL_SECONDS' backend/database.py` | `backend/database.py` | 常量可改 |
 | A17 | 7 / 4 / 7 / 1 | 四个端点的事件集合大小 | `backend/tests/test_sse_event_contract.py` 的期望表 | `backend/tests/test_sse_event_contract.py` + `frontend/src/api/summarize.ts` | 随事件增减 |
-| A18 | 55 / 8 / 26 | 前端 `.vue` 数 / `api/` 客户端数 / 后端 `.py` 模块数 | `find frontend/src -name '*.vue' \| wc -l`；`ls frontend/src/api/*.ts \| wc -l`；`ls backend/*.py \| wc -l` | 整个仓库 | 随文件增删 |
+| A18 | 55 / 8 / 27 | 前端 `.vue` 数 / `api/` 客户端数 / 后端 `.py` 模块数 | `find frontend/src -name '*.vue' \| wc -l`；`ls frontend/src/api/*.ts \| wc -l`；`ls backend/*.py \| wc -l` | 整个仓库 | 随文件增删 |
 | A19 | 20 / 10 / 30 / 60 / 10 / 5 | 六个公开端点的每分钟上限（解析 / 下载 / 直链 / 缩略图 / 登录 / 注册）；可用环境变量覆盖，0 表示不限流 | `grep -n 'VIDDIGEST_RATE_LIMIT' backend/ratelimit.py` | `backend/ratelimit.py`（ADR 0020） | 常量可改 |
 
 **两条口径说明**：①「11 关」的真值只在 `init.sh`，`scripts/check_gate_consistency.py` 从那里数；本文与任何文档都不得再出现与它不一致的关卡数。②「4 个 job 定义，展开 26 个实例」与运维手册里的「四个 job」不矛盾：前者是展开后的实例数，后者是工作流里的 job 定义数。③限流上限是「每个来源 IP 每个固定窗口」；计数在进程内，重启即清零，多实例部署时每个实例各算各的。

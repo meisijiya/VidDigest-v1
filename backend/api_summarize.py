@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.sse import ServerSentEvent, EventSourceResponse
 from pydantic import BaseModel, SecretStr, field_validator
 
+import sse_events
 import video_claim
 from auth import get_optional_user
 from credentials import CredentialError, UserCredential
@@ -361,23 +362,10 @@ async def summarize_video(
     自己那一份，走的是**不占位**的独立路径，不影响其他人的复用。
     """
 
-    async def fail(message: str, need_vip: bool = False, need_login: bool = False):
-        """回一条错误事件。抽出来是因为这个端点的拒绝有四五个出口，
-        每次都手写一遍 json.dumps 只会让某一处漏掉某个字段。"""
-        yield ServerSentEvent(
-            raw_data=json.dumps({
-                "message": message,
-                "need_login": need_login,
-                "need_vip": need_vip,
-            }, ensure_ascii=False),
-            event="error",
-        )
-
     # 未登录先拒：占位期间别人只能干等，而这次请求注定要被拒，
     # 没有任何理由让它先去占一个位置。
     if not user:
-        async for event in fail(_NOT_LOGGED_IN, need_login=True):
-            yield event
+        yield sse_events.error_event(_NOT_LOGGED_IN, need_login=True)
         return
 
     # 自带凭据在这里就包好，之后全程只传封装对象。
@@ -390,8 +378,7 @@ async def summarize_video(
     except CredentialError as e:
         # 固定文案：CredentialError 的消息里没有用户原文（见 validate_base_url），
         # 这里也不追加任何上下文。
-        async for event in fail(str(e)):
-            yield event
+        yield sse_events.error_event(str(e))
         return
     # 自带凭据时不消耗平台额度——钱是用户自己出的（ADR 0004）。
     using_byok = credential is not None
@@ -416,12 +403,10 @@ async def summarize_video(
                 video_claim.reclaim(req.url, user["id"])
             )
             if reg.outcome == video_claim.RECLAIM_FORBIDDEN:
-                async for event in fail(_NOT_OWNER):
-                    yield event
+                yield sse_events.error_event(_NOT_OWNER)
                 return
             if reg.outcome == video_claim.RECLAIM_BUSY:
-                async for event in fail("这份总结正在重新解析中，请稍后再试"):
-                    yield event
+                yield sse_events.error_event("这份总结正在重新解析中，请稍后再试")
                 return
             # "skip"：社区里没有可覆盖的成品，按首次解析正常走
             regenerate = reg.outcome == video_claim.RECLAIM_REGENERATE
@@ -441,15 +426,13 @@ async def summarize_video(
                     # 探到「有成品」到读取之间那一行被删了（管理员删条目，
                     # ADR 0013）。重放需要那一行——没有就明确报错，
                     # 别拿 None 去重放。
-                    async for event in fail("这份总结没能保存到社区，请稍后重试"):
-                        yield event
+                    yield sse_events.error_event("这份总结没能保存到社区，请稍后重试")
                     return
                 for event in _replay_events(user, existing):
                     yield event
                 return
             if claim.outcome == video_claim.CLAIM_BUSY:
-                async for event in fail("这个视频正在解析中，请稍后再试"):
-                    yield event
+                yield sse_events.error_event("这个视频正在解析中，请稍后再试")
                 return
 
         # 到这里我们可以调模型了（占位者，或覆盖自己那一份的作者）。
@@ -462,8 +445,7 @@ async def summarize_video(
         if not using_byok:
             allowed, remaining, message = _check_quota_permission(user, "parse")
             if not allowed:
-                async for event in fail(message, need_vip=True):
-                    yield event
+                yield sse_events.error_event(message, need_vip=True)
                 return
 
         extractor = _get_extractor()
@@ -476,14 +458,11 @@ async def summarize_video(
 
         if not subtitle_data["has_subtitle"]:
             head, reason, asr_reason = _subtitle_failure(subtitle_data)
-            yield ServerSentEvent(
-                raw_data=json.dumps({
-                    "message": f"{head}，无法生成总结",
-                    # 机器可读的原因：前端将来要分开提示时不必再猜
-                    "reason": reason,
-                    "asr_reason": asr_reason,
-                }, ensure_ascii=False),
-                event="error",
+            # reason 是机器可读的那一层：前端按它判类，不再匹配中文文案。
+            yield sse_events.error_event(
+                f"{head}，无法生成总结",
+                reason=reason,
+                asr_reason=asr_reason,
             )
             return
 
@@ -506,15 +485,9 @@ async def summarize_video(
             # 而那正是白送平台付费资源（模型调用费）。
             remaining = consume_quota(user["id"], "parse")
             if remaining is None:
-                yield ServerSentEvent(
-                    raw_data=json.dumps(
-                        {
-                            "message": "今日次数已用完",
-                            "reason": "quota_exhausted",
-                        },
-                        ensure_ascii=False,
-                    ),
-                    event="error",
+                yield sse_events.error_event(
+                    "今日次数已用完",
+                    reason=sse_events.QUOTA_EXHAUSTED,
                 )
                 return
             quota_spent = True
@@ -592,8 +565,7 @@ async def summarize_video(
                 template=template_id,
             ) == 0:
                 logger.warning("社区视频 %r 已不属于 %r，未能覆盖", req.url, user["id"])
-                async for event in fail("重新解析没能写回社区，这份总结已被别人改动"):
-                    yield event
+                yield sse_events.error_event("重新解析没能写回社区，这份总结已被别人改动")
                 return
             # 覆盖**不占位**：没有位置要还，闸门由上下文退出时放掉。
         else:
@@ -615,8 +587,7 @@ async def summarize_video(
                 # 它就不再是空操作了。不拥有，就别去动它。
                 claim.settle()
                 logger.warning("社区视频 %r 的占位已不在 pending 状态，结果未落库", req.url)
-                async for event in fail("这份总结没能保存到社区，请稍后重试"):
-                    yield event
+                yield sse_events.error_event("这份总结没能保存到社区，请稍后重试")
                 # quota_spent 保持真 → finally 把这一次扣减退回去。
                 # 用户看到的是一份完整总结，社区里却什么都没有，
                 # 让他白付这一次不成立。
@@ -640,18 +611,9 @@ async def summarize_video(
         # 自己的凭据回显给他自己，同时进了浏览器历史与代理日志。
         # 与 /api/chat 共用同一句固定文案——两条路径的口径必须一致。
         if using_byok:
-            yield ServerSentEvent(
-                raw_data=json.dumps(
-                    {"message": _BYOK_FAILURE_MESSAGE, "byok": True},
-                    ensure_ascii=False,
-                ),
-                event="error",
-            )
+            yield sse_events.error_event(_BYOK_FAILURE_MESSAGE, byok=True)
         else:
-            yield ServerSentEvent(
-                raw_data=json.dumps({"message": f"总结失败: {str(e)}"}, ensure_ascii=False),
-                event="error",
-            )
+            yield sse_events.error_event(f"总结失败: {str(e)}")
     finally:
         # 占位与覆盖闸门的释放（ADR 0031）：退出上下文即释放。
         # 覆盖路径**不会**走到还位——那个上下文只在抢到闸门时才放闸，
@@ -687,39 +649,22 @@ async def chat_with_video(
             req.user_api_key, req.base_url, req.model
         )
     except CredentialError as e:
-        yield ServerSentEvent(
-            raw_data=json.dumps({
-                "message": str(e),
-                "need_login": False,
-                "need_vip": False,
-            }, ensure_ascii=False),
-            event="error",
-        )
+        yield sse_events.error_event(str(e))
         return
 
     if credential is not None:
         # 仍要登录：追问会话按用户隔离，没登录就没有「他的会话」可言，
         # 也不能让未登录的人白用额度豁免。
         if not user:
-            yield ServerSentEvent(
-                raw_data=json.dumps({
-                    "message": _NOT_LOGGED_IN,
-                    "need_login": True,
-                    "need_vip": False,
-                }, ensure_ascii=False),
-                event="error",
-            )
+            yield sse_events.error_event(_NOT_LOGGED_IN, need_login=True)
             return
     else:
         allowed, _remaining, message = _check_quota_permission(user, "chat")
         if not allowed:
-            yield ServerSentEvent(
-                raw_data=json.dumps({
-                    "message": message,
-                    "need_login": user is None,
-                    "need_vip": user is not None,
-                }, ensure_ascii=False),
-                event="error",
+            yield sse_events.error_event(
+                message,
+                need_login=user is None,
+                need_vip=user is not None,
             )
             return
 
@@ -739,13 +684,10 @@ async def chat_with_video(
             subtitle_data = await _run_in_thread(extractor.extract, req.url)
             if not subtitle_data["has_subtitle"]:
                 head, reason, asr_reason = _subtitle_failure(subtitle_data)
-                yield ServerSentEvent(
-                    raw_data=json.dumps({
-                        "message": f"{head}，无法回答问题",
-                        "reason": reason,
-                        "asr_reason": asr_reason,
-                    }, ensure_ascii=False),
-                    event="error",
+                yield sse_events.error_event(
+                    f"{head}，无法回答问题",
+                    reason=reason,
+                    asr_reason=asr_reason,
                 )
                 return
             subtitle_text = subtitle_data["full_text"]
@@ -754,12 +696,9 @@ async def chat_with_video(
         if credential is None:
             # 同上：扣减自带守卫，**没扣成（None）就是额度已满**，必须中止（工单 #17）。
             if consume_quota(user["id"], "chat") is None:
-                yield ServerSentEvent(
-                    raw_data=json.dumps({
-                        "message": "今日追问次数已用完",
-                        "reason": "quota_exhausted",
-                    }, ensure_ascii=False),
-                    event="error",
+                yield sse_events.error_event(
+                    "今日追问次数已用完",
+                    reason=sse_events.QUOTA_EXHAUSTED,
                 )
                 return
             quota_spent = True
@@ -825,22 +764,11 @@ async def chat_with_video(
             # 固定文案，不拼 str(e)，也不写日志——票面要求这条路径的
             # 日志记录列表、标准错误、标准输出里都搜不到凭据，而异常文本
             # 是唯一可能带着它回来的东西。诊断信息由用户重试一次拿到。
-            yield ServerSentEvent(
-                raw_data=json.dumps(
-                    {"message": _BYOK_FAILURE_MESSAGE, "byok": True},
-                    ensure_ascii=False,
-                ),
-                event="error",
-            )
+            yield sse_events.error_event(_BYOK_FAILURE_MESSAGE, byok=True)
         else:
             # 不带凭据时维持原样：这里没有用户凭据要护，异常文本对用户
             # 排查问题有用。
-            yield ServerSentEvent(
-                raw_data=json.dumps(
-                    {"message": f"回答失败: {str(e)}"}, ensure_ascii=False
-                ),
-                event="error",
-            )
+            yield sse_events.error_event(f"回答失败: {str(e)}")
     finally:
         # 同 summarize_video：唯一回滚点，断流抛的 GeneratorExit /
         # CancelledError 不在 Exception 族里，但扣了的额度必须还回去。

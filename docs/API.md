@@ -151,8 +151,7 @@ Token 有效期 **72 小时**，过期需重新登录。
 | `summary` | `"流式输出的文本片段..."` | 总结内容（多次推送，前端累加） |
 | `mindmap` | `{"markdown": "# 标题\n## 章节\n..."}` | 思维导图 Markdown |
 | `tags` | `["标签1", "标签2"]` | 标签。已按服务端词表校验，词表外的词不会出现在这里 |
-| `error` | `{"message": "...", "need_login": false, "need_vip": false}` | 错误信息 |
-| `error` | `{"message": "今日次数已用完", "reason": "quota_exhausted"}` | 额度扣减失败。**走另一个分支**，不带 `need_login` / `need_vip` |
+| `error` | `{"message": "...", "need_login": false, "need_vip": false, "reason": "", "asr_reason": "", "byok": false}` | 错误。**六个键总是出现**（`backend/sse_events.py`，ADR 0034）：`need_login` / `need_vip` 是前端路由信号，`reason` 供前端判类（字幕失败四类见 `summarizer.FAIL_*`，额度耗尽为 `quota_exhausted`，其余为空串） |
 | `done` | `[DONE]` | 流结束标记 |
 
 命中社区已有结果时（复用回放）额外先发一条 `ownership`：
@@ -183,7 +182,7 @@ Token 有效期 **72 小时**，过期需重新登录。
 |:----:|:----|:-----|
 | `quota` | `{"parse": {...}, "chat": {...}, "remaining": 2, "limit": 3, "unlimited": false}` | 对话额度。与 summarize 同形，但扣的是**对话**计数器（两额度独立，见 ADR 0003） |
 | `answer` | `"流式输出的文本片段..."` | 回答内容（多次推送，前端累加） |
-| `error` | `{"message": "...", "need_login": false, "need_vip": false}` | 错误信息 |
+| `error` | `{"message": "...", "need_login": false, "need_vip": false, "reason": "", "asr_reason": "", "byok": false}` | 错误。与 summarize 同一套六键形状（ADR 0034） |
 | `done` | `[DONE]` | 流结束标记 |
 
 ⚠️ 额度耗尽时 `quota` 事件带 `{"byok": true, "consumed": false}`（自带凭据不消耗），
