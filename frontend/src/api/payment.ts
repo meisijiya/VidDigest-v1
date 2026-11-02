@@ -1,4 +1,4 @@
-import axios from 'axios'
+import { http } from '../lib/http.ts'
 
 /** 创建结账会话后回来的数据（后端 `api_payment.create_checkout_session`）。 */
 export interface CheckoutSession {
@@ -8,7 +8,7 @@ export interface CheckoutSession {
 }
 
 export async function createCheckoutSession(planType: string): Promise<CheckoutSession> {
-  const res = await axios.post('/api/payment/create-checkout', {
+  const res = await http.post('/api/payment/create-checkout', {
     plan_type: planType,
   })
   return res.data.data

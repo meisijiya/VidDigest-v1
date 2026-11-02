@@ -1,4 +1,4 @@
-import axios from 'axios'
+import { http, isUnauthorized } from '../lib/http.ts'
 
 /**
  * 一张社区卡片。
@@ -66,13 +66,6 @@ export interface CommunityQuery {
   tag?: string
 }
 
-function client() {
-  const token = localStorage.getItem('auth_token')
-  return axios.create({
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
-}
-
 /**
  * 列表 / 搜索共用的查询参数。
  *
@@ -91,7 +84,7 @@ function browseParams({ page = 1, pageSize = 20, tag = '' }: CommunityQuery = {}
  * 没有 token 就跳过请求。翻页与按标签筛选同属浏览，未登录也开放。
  */
 export async function fetchCommunityVideos(query: CommunityQuery = {}): Promise<CommunityList> {
-  const res = await client().get('/api/community/videos', {
+  const res = await http.get('/api/community/videos', {
     params: browseParams(query),
   })
   return res.data
@@ -105,7 +98,7 @@ export async function fetchCommunityVideos(query: CommunityQuery = {}): Promise<
  * 再叠加第二个筛选。这份清单与服务端是同一份真值，取一次后常驻。
  */
 export async function fetchCommunityTags(): Promise<CommunityTag[]> {
-  const res = await client().get('/api/community/tags')
+  const res = await http.get('/api/community/tags')
   return res.data.items || []
 }
 
@@ -129,7 +122,7 @@ export interface CommunityByUrl {
  * 「重新解析」按钮也永远不会出现。
  */
 export async function fetchCommunityByUrl(url: string): Promise<CommunityByUrl | null> {
-  const res = await client().get('/api/community/videos/by-url', { params: { url } })
+  const res = await http.get('/api/community/videos/by-url', { params: { url } })
   return res.data
 }
 
@@ -149,13 +142,12 @@ export async function searchCommunity({
   pageSize = 20,
 }: CommunityQuery & { q?: string } = {}): Promise<CommunitySearchResult> {
   try {
-    const res = await client().get('/api/community/search', {
+    const res = await http.get('/api/community/search', {
       params: { q, ...browseParams({ page, pageSize, tag }) },
     })
     return { ...res.data, needLogin: false }
   } catch (err) {
-    const e = err as { response?: { status?: number } }
-    if (e.response?.status === 401) {
+    if (isUnauthorized(err)) {
       // 分页字段照请求回填，不留 undefined：消费方（社区页的分页条）
       // 直接读 res.page / res.page_size，缺字段会让「第 1 页」变成
       // NaN 页，症状是翻页按钮点不动。
@@ -178,6 +170,6 @@ export async function publishCommunityCard(payload: {
   video_title?: string
   cover_url?: string
 }): Promise<unknown> {
-  const res = await client().post('/api/community/cards', payload)
+  const res = await http.post('/api/community/cards', payload)
   return res.data
 }

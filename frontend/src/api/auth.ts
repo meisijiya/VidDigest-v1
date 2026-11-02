@@ -1,6 +1,5 @@
-import axios from 'axios'
+import { clearToken, http, httpAnonymous, saveToken } from '../lib/http.ts'
 
-const TOKEN_KEY = 'auth_token'
 const USER_KEY = 'auth_user'
 
 /**
@@ -18,60 +17,53 @@ export interface SessionUser {
   [key: string]: unknown
 }
 
-axios.interceptors.request.use((config) => {
-  const token = localStorage.getItem(TOKEN_KEY)
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
-
 /**
- * token 的读取出口。
+ * 用户快照的读取出口。
  *
- * 落盘只有这一处（localStorage）。别的地方要 token 一律调它，
- * 免得出现第二个真相源。
+ * 这是**会话种子**，不是凭据：凭据（token）的落盘与读取在 `lib/http.ts`，
+ * 那里是唯一真值。这里存的是「上次是谁」，只为第一帧不用空一拍。
  */
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
-}
-
-export function isLoggedIn(): boolean {
-  return !!getToken()
-}
-
 export function getSavedUser(): SessionUser | null {
   const data = localStorage.getItem(USER_KEY)
   return data ? (JSON.parse(data) as SessionUser) : null
 }
 
-export function saveAuth(token: string, user: SessionUser): void {
-  localStorage.setItem(TOKEN_KEY, token)
+function saveUser(user: SessionUser): void {
   localStorage.setItem(USER_KEY, JSON.stringify(user))
 }
 
+/**
+ * 注册。走**匿名**出口：注册不需要凭据，也不该把旧 token 发去用不上的地方。
+ */
 export async function register(email: string, password: string): Promise<SessionUser> {
-  const res = await axios.post('/api/auth/register', { email, password })
+  const res = await httpAnonymous.post('/api/auth/register', { email, password })
   const { token, user } = res.data.data
-  saveAuth(token, user)
+  saveToken(token)
+  saveUser(user)
   return user
 }
 
+/**
+ * 登录。同样走匿名出口——登录要的是「换一份新凭据」，不是「带上旧的」。
+ */
 export async function login(email: string, password: string): Promise<SessionUser> {
-  const res = await axios.post('/api/auth/login', { email, password })
+  const res = await httpAnonymous.post('/api/auth/login', { email, password })
   const { token, user } = res.data.data
-  saveAuth(token, user)
+  saveToken(token)
+  saveUser(user)
   return user
 }
 
+/** 回查本人信息。需要凭据，所以走带 token 的出口。 */
 export async function fetchMe(): Promise<SessionUser> {
-  const res = await axios.get('/api/auth/me')
+  const res = await http.get('/api/auth/me')
   const user = res.data.data as SessionUser
-  localStorage.setItem(USER_KEY, JSON.stringify(user))
+  saveUser(user)
   return user
 }
 
+/** 登出：token 与用户快照一起清。 */
 export function logout(): void {
-  localStorage.removeItem(TOKEN_KEY)
+  clearToken()
   localStorage.removeItem(USER_KEY)
 }

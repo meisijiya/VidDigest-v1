@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { fetchMe, getSavedUser, getToken, isLoggedIn, logout as logoutApi, type SessionUser } from '../api/auth.ts'
+import { fetchMe, getSavedUser, logout as logoutApi, type SessionUser } from '../api/auth.ts'
+import { getToken, isLoggedIn, isUnauthorized } from '../lib/http.ts'
 
 /**
  * 会话的唯一持有者：登录用户、token、管理员标记。
@@ -75,18 +76,6 @@ export const useSessionStore = defineStore('session', () => {
     user.value = null
     token.value = null
     isAdmin.value = false
-  }
-
-  /**
-   * 这个失败是不是「服务端说这个 token 不认了」（401）。
-   *
-   * 只看状态码，不看错误文案：文案是给用户看的，改一次就飘一次。
-   * 形状与 `HistoryPage.vue` / `api/community.ts` 里的同名判据一致
-   * （axios 的错误对象挂在 `response.status` 上）。
-   */
-  function isUnauthorized(err: unknown): boolean {
-    const e = err as { response?: { status?: number } }
-    return e?.response?.status === 401
   }
 
   /**

@@ -273,7 +273,9 @@ describe('收藏项的删除有第二道确认', () => {
   })
 
   test('清空走服务端一次性接口，不是前端循环删 N 次', () => {
-    assert.ok(api.includes("client().delete('/api/history'"))
+    // 锚点跟着 api 层的新出口走（ADR 0032）：`client()` 那份复制品已经删掉，
+    // 统一走 `http`。
+    assert.ok(api.includes("http.delete('/api/history'"))
     assert.doesNotMatch(code, /Promise\.all\(items\.value\.map/, '又变回前端循环删了 —— 1000 条时那是 1000 个请求')
   })
 })

@@ -7,6 +7,7 @@
  * 断流/异常时前端永远等不到，loading 卡死。
  */
 
+import { httpFetch, httpStream } from '../lib/http.ts'
 import type { QuotaPayload } from '../lib/quota.ts'
 
 /**
@@ -91,8 +92,6 @@ export function createSseParser() {
   }
 }
 
-const TOKEN_KEY = 'auth_token'
-
 /** `streamSse` 的行为开关。 */
 interface StreamOptions {
   /** 按事件名分派负载。 */
@@ -132,12 +131,10 @@ function streamSse(
 
   const done = (async () => {
     try {
-      const token = localStorage.getItem(TOKEN_KEY)
-      const res = await fetch(path, {
+      const res = await httpStream(path, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -391,10 +388,7 @@ export function chatWithVideo(
 
 /** 当前剩余额度。只读，不消耗。 */
 export async function fetchQuota(): Promise<QuotaPayload> {
-  const token = localStorage.getItem(TOKEN_KEY)
-  const res = await fetch('/api/quota', {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
+  const res = await httpFetch('/api/quota')
   if (!res.ok) throw new Error('获取额度失败')
   return (await res.json()) as QuotaPayload
 }
@@ -409,11 +403,7 @@ export async function fetchQuota(): Promise<QuotaPayload> {
  * 只读、不消耗额度。这个端点匿名可读：清单里没有用户相关的东西。
  */
 export async function fetchSummaryTemplates(): Promise<SummaryTemplateList> {
-  const token = localStorage.getItem(TOKEN_KEY)
-  const res = await fetch('/api/summary-templates', {
-    method: 'GET',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
+  const res = await httpFetch('/api/summary-templates', { method: 'GET' })
   if (!res.ok) throw new Error('获取总结模板失败')
   return (await res.json()) as SummaryTemplateList
 }
