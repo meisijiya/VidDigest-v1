@@ -591,6 +591,39 @@ ls -lh backend/data/app.db
 | `.env`         | `backend/.env`           | ✅ **绝不入 git** |
 
 
+### 8.1.1 Windows 开发栈：宿主与容器别同时写同一个 SQLite 文件
+
+`docker-compose.yml` 把 `./backend/data` bind mount 进容器，于是**宿主上的
+`backend/venv` 与容器里的 backend 指向同一个 `app.db`**。SQLite 的
+WAL 模式下 `-wal` / `-shm` 两个文件承载事务，而 **WAL 索引是平台相关的**：
+Windows 的 SQLite 与 Linux 的 SQLite 不能安全地共用同一组 `-wal` / `-shm`。
+混着写会出现两个症状，都不报错：
+
+- 容器里**新起的进程打不开库**：`sqlite3.OperationalError: unable to open
+  database file`（连 `PRAGMA journal_mode=WAL` 都执行不了）。
+- 容器里**常驻的 app 进程拿着旧句柄继续服务**，读不到宿主刚写进去的行——
+  症状是「刚在宿主建好的邀请码，接口报『邀请码无效』」。
+
+**正确做法：同一个库只由一个平台写。**
+
+| 场景 | 怎么做 |
+| --- | --- |
+| 要在宿主建号/建邀请码 | `docker compose exec backend python -c "..."`（在容器里写） |
+| 要在宿主跑后端进程 | `docker compose stop backend`，起完再 `docker compose start backend`；**两者不要同时在跑** |
+| e2e / 探针脚本 | 只走 HTTP，不直接 import 数据层去写库 |
+
+**已经混写过、容器视图读不到新数据时的修复**（顺序不能换）：
+
+```bash
+docker compose stop backend                      # 先停容器，避免并发写
+backend/venv/Scripts/python.exe -c "import sqlite3;print(sqlite3.connect('backend/data/app.db').execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone())"
+rm -f backend/data/app.db-wal backend/data/app.db-shm   # 已在 app.db 里并完账，才能删
+docker compose up -d backend                     # 容器重建自己的 -wal / -shm
+```
+
+`wal_checkpoint(TRUNCATE)` 必须**先于** `rm`：`-wal` 里可能有已提交但还没
+并回 `app.db` 的事务（宿主这边建的账号、邀请码就在里面），直接删等于丢数据。
+
 ### 8.2 备份策略
 
 ```bash
