@@ -1353,6 +1353,72 @@ python scripts/ops/inspect_runtime.py --health-url http://localhost:8080/api/hea
 - `docker-compose.yml` 用 `env_file` 在运行时注入，文件里只有变量名
 - 镜像里没有 key，也没有默认密钥——`JWT_SECRET` 缺失时后端**拒绝启动**（ADR 0010）
 
+### 13.8 线上实例（当前部署形态）
+
+线上跑在一台腾讯云轻量应用服务器（4C/4G，Ubuntu 24.04，Docker + Compose）。
+**部署信息不含任何凭据**：`backend/.env` 只落在服务器上（见 13.7），仓库里
+只有 nginx 站点配置。
+
+| 项 | 值 |
+| --- | --- |
+| 站点 | `https://ljhlovefjm.top:8443/`（nginx 站点配置：`deploy/nginx/viddigest-8443.conf`） |
+| 应用 | `<部署目录>`（`git clone` 的仓库），`docker compose up -d --no-build` |
+| 端口 | backend `127.0.0.1:8000`、frontend `127.0.0.1:8080`——**都只绑回环**，公网只开 nginx |
+| 证书 | 复用主域名的证书（certbot webroot 自动续期）。证书上只有主域名，所以子域要用另一个域名 + 另签一张 |
+| 数据库 | `<部署目录>/backend/data/app.db`（bind mount，容器以 `appuser` 身份写，宿主目录属主要跟容器一致） |
+| 备份 | 每日 03:17 跑 `scripts/ops/backup_db.py`，保留 14 份，输出 `<部署目录>/backups` |
+
+**镜像怎么上去的**：在那台机器上直接构建**不可行**——后端镜像的
+`apt-get install ffmpeg` 在 buildkit 里要几十分钟（buildkit 网络命名空间取到
+IPv6 地址却没有 IPv6 路由，每个连接先等一次 IPv6 超时）。所以镜像在本地
+构建后传过去：
+
+```bash
+docker compose build
+docker save universal-video-downloader-backend:latest universal-video-downloader-frontend:latest \
+  | gzip -1 | ssh <host> "gunzip | docker load"
+```
+
+服务器上的 compose 项目名取自目录名（`viddigest`），本地项目名取自目录名
+（`universal-video-downloader`），所以传过去之后要补一次打标签：
+
+```bash
+sudo docker tag universal-video-downloader-backend:latest viddigest-backend:latest
+sudo docker tag universal-video-downloader-frontend:latest viddigest-frontend:latest
+```
+
+**更新线上代码**（只改了代码、没改依赖时）：
+
+```bash
+cd <部署目录> && sudo git pull
+sudo docker compose up -d --no-build        # 镜像没变就不重建
+```
+
+改了依赖就要重新走「本地构建 → 传镜像 → 打标签」那条路。
+
+**验收**（线上同样要过，不是「装上了就算」）：
+
+```bash
+curl -s https://ljhlovefjm.top:8443/api/health                  # {"status":"ok"}
+curl -s -o /dev/null -w "%{http_code}\n" https://ljhlovefjm.top:8443/admin   # 200（SPA rewrite）
+python scripts/ops/check_xff_bypass.py --url https://ljhlovefjm.top:8443/api/parse --requests 25
+```
+
+第三条是限流判据（ADR 0022）：伪造的 `X-Forwarded-For` 必须打不出 429 才算
+被绕过——线上 nginx 用覆盖语义（见站点配置的头部注释），所以伪造头无效。
+
+**这台机器的网络限制**（实测，不是推测）：
+
+| 目标 | 结果 | 影响 |
+| --- | --- | --- |
+| 百炼（模型 API） | 通 | AI 总结 / 导图 / 追问可用 |
+| B 站（网页与接口） | **412 风控** | 机房 IP 被拦，视频页与接口都拿不到 → B 站视频解析在这台机上走不通 |
+| YouTube / Google | 不通 | yt-dlp 的 YouTube 通道不可用；Whisper 回退也不可用 |
+| 抖音 | 通 | 走项目自带的 `backend/douyin.py` |
+
+也就是说：这台机器适合**自用 + AI 能力验证**，「通用视频下载」要覆盖 B 站与
+YouTube 得换地域或加代理。
+
 ---
 
 ## 14. 持续集成
