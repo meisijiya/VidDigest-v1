@@ -28,6 +28,9 @@ services:
       # 两个宿主目录都在 .gitignore 里。
       - ./backend/data:/app/data
       - ./backend/logs:/app/logs
+      # yt-dlp 的 cookies 目录（可选）。配了 YTDL_COOKIES_FILE 才用得上，
+      # 容器内填 /app/cookies/<文件名>；不挂的话那个路径在容器里不存在。
+      - ./backend/cookies:/app/cookies:ro
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

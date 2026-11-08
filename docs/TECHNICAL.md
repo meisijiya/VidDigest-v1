@@ -100,7 +100,7 @@
 
 **这一节服务维护者。**
 
-### 3.1 后端（27 个模块）
+### 3.1 后端（28 个模块）
 
 | 模块 | 职责 |
 | --- | --- |
@@ -122,6 +122,7 @@
 | `backend/url_canonical.py` | 链接的比较用归一 |
 | `backend/tags.py` | 固定标签词表与校验 |
 | `backend/downloader.py` | yt-dlp 封装、格式归类、下载 |
+| `backend/ytdlp_net.py` | yt-dlp 的出网口径：`YTDL_PROXY` / `YTDL_COOKIES_FILE` 注入到每个选项字典 |
 | `backend/douyin.py` | 抖音解析 |
 | `backend/formats.py` | 清晰度 / 音轨归类 |
 | `backend/prompt_template.py` | 总结与导图的 prompt 模板 |

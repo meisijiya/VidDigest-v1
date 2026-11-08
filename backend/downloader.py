@@ -8,6 +8,7 @@ import yt_dlp
 from download_artifacts import WrittenPaths
 from formats import make_format
 from url_canonical import url_for_ytdlp
+from ytdlp_net import with_network
 
 def _find_ffmpeg_path() -> Optional[str]:
     """查找 ffmpeg 可执行文件路径"""
@@ -68,12 +69,12 @@ class VideoDownloader:
     def parse_video(self, url: str) -> dict:
         """解析视频信息，不下载文件"""
         url = url_for_ytdlp(url)
-        ydl_opts = {
+        ydl_opts = with_network({
             "quiet": True,
             "no_warnings": True,
             "extract_flat": False,
             "noplaylist": True,
-        }
+        })
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
@@ -228,14 +229,14 @@ class VideoDownloader:
         # 不用去扫目录——扫目录会删掉别的请求正在写的在途文件。
         written = WrittenPaths()
 
-        ydl_opts = {
+        ydl_opts = with_network({
             "format": format_id,
             "outtmpl": os.path.join(self.DOWNLOAD_DIR, "%(title)s.%(ext)s"),
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "progress_hooks": [written.track_progress],
-        }
+        })
 
         if self.has_ffmpeg:
             ydl_opts["ffmpeg_location"] = self.ffmpeg_path
@@ -287,12 +288,12 @@ class VideoDownloader:
     def get_direct_url(self, url: str, format_id: str) -> dict:
         """获取视频直链"""
         url = url_for_ytdlp(url)
-        ydl_opts = {
+        ydl_opts = with_network({
             "format": format_id,
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-        }
+        })
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)

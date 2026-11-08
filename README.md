@@ -1,3 +1,6 @@
+> **本项目已归档（2026-11-08）。** 现网服务已下线，本仓只作参考基线，不再接受功能开发。
+> 后继项目见 [meisijiya/VidDigest](https://github.com/meisijiya/VidDigest)。
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/VidDigest-AI%20视频理解与下载平台-7c3aed?style=for-the-badge&logo=github">
@@ -226,6 +229,8 @@ bash ./init.sh          # 退出码 0 = 已验证
 | `ALIYUN_BAILIAN_PROTOCOL` | 协议：`openai`（默认）/ `anthropic` | —— | 用 `openai` |
 | `ALIYUN_BAILIAN_ENABLE_THINKING` | 思考开关，默认**关** | —— | 关 |
 | `OPENAI_API_KEY` | **只给 Whisper ASR**：视频没有字幕时转写音频 | [platform.openai.com](https://platform.openai.com/) | 跳过 ASR，不影响其它 AI 功能 |
+| `YTDL_PROXY` | yt-dlp 的出网代理（`http://` / `socks5://`）。机房 IP 被平台风控（视频页与 view API 412）时唯一解法 | 你自己的代理地址 | 直连 |
+| `YTDL_COOKIES_FILE` | yt-dlp 读的 cookies 文件（Netscape 格式）。登录态解一部分风控，AI 字幕轨要它才有 | 浏览器插件导出；docker 部署填 `/app/cookies/<文件名>` | 匿名请求 |
 
 > **环境变量优先于模型清单表。** `ALIYUN_BAILIAN_MODEL` 一旦写了，就盖过清单表里的
 > 平台默认模型；不写就用清单表里的 `qwen3.7-flash`。
@@ -314,6 +319,11 @@ openssl rand -hex 32
 | Twitter/X | `https://x.com/user/status/xxx` |
 | Instagram | `https://www.instagram.com/p/xxx/` |
 | ... 1800+ 其他 | 几乎所有主流视频平台 |
+
+> **部署口径**：解析走服务器自己的出口。境内部署时境内平台（抖音、腾讯视频等）可用；
+> **B 站会按出口 IP 风控返回 412**，需要配置 `YTDL_PROXY` 或 `YTDL_COOKIES_FILE`；
+> 境外平台（YouTube 等）在没有出墙线路的机器上不可达。实测数据见
+> [运维手册 §9.3.1](docs/OPERATIONS.md#931-出站可达性实测-2026-11-04)。
 
 ### 🧠 AI 视频总结
 

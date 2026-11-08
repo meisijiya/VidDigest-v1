@@ -26,6 +26,7 @@ import mindmap
 # Messages API）、端点与客户端构造都收在那个模块里，本文件只管「用哪个
 # provider、哪个模型、什么参数」。
 import provider_config
+from ytdlp_net import with_network
 
 logger = logging.getLogger("summarizer")
 
@@ -318,11 +319,11 @@ class SubtitleExtractor:
     @staticmethod
     def _get_video_info(url: str) -> dict:
         """通过 yt-dlp 获取视频元数据（不下载）"""
-        ydl_opts = {
+        ydl_opts = with_network({
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-        }
+        })
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(url, download=False) or {}
 
@@ -400,7 +401,7 @@ class SubtitleExtractor:
         """通过 yt-dlp 下载字幕文件后解析"""
         import os
         with tempfile.TemporaryDirectory() as tmp_dir:
-            ydl_opts = {
+            ydl_opts = with_network({
                 "quiet": True, "no_warnings": True, "noplaylist": True,
                 "skip_download": True,
                 "writesubtitles": sub_type == "manual",
@@ -408,7 +409,7 @@ class SubtitleExtractor:
                 "subtitleslangs": [lang],
                 "subtitlesformat": "vtt",
                 "outtmpl": os.path.join(tmp_dir, "subtitle"),
-            }
+            })
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
@@ -565,7 +566,7 @@ def _download_audio_for_asr(url: str) -> str | None:
         url = url_for_ytdlp(url)
         try:
             logger.info("Downloading audio via yt-dlp for ASR...")
-            ydl_opts = {
+            ydl_opts = with_network({
                 "quiet": True,
                 "no_warnings": True,
                 "format": "bestaudio/best",
@@ -575,7 +576,7 @@ def _download_audio_for_asr(url: str) -> str | None:
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
                 }],
-            }
+            })
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 video_id = info.get("id", "audio")

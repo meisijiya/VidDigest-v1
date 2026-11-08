@@ -170,6 +170,8 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5173/   # → 200
 | `STRIPE_PRICE_ID_MONTHLY` | —   | —                                                   | 月订阅价格 ID                                | Stripe Dashboard → Products                                                      |
 | `STRIPE_WEBHOOK_SECRET`   | —   | —                                                   | Webhook 验签                              | Stripe Dashboard → Webhooks                                                      |
 | `FRONTEND_URL`            | —   | `http://localhost:5173`                             | 支付成功跳转                                  | 按实际前端地址填                                                                         |
+| `YTDL_PROXY`              | —   | 空（直连）                                             | yt-dlp 的出网代理。机房 IP 段被平台按 IP 风控（视频页与 view API 一律 412）时唯一解法 | `http://host:port` / `socks5://host:port`                                        |
+| `YTDL_COOKIES_FILE`       | —   | 空（匿名）                                             | yt-dlp 读的 cookies 文件。登录态解一部分风控；AI 字幕轨要登录态才有 | 浏览器插件导出 Netscape 格式；docker 部署填 `/app/cookies/<文件名>`                          |
 
 
 ### 4.2 模板
@@ -200,6 +202,13 @@ FRONTEND_URL=https://your-domain.com
 
 # ─── ASR 回退（可选）──────────────────────────
 OPENAI_API_KEY=sk-your-openai-key
+
+# ─── yt-dlp 出网（可选，出口 IP 被平台风控时才需要）────
+# 机房 IP 段可能被按 IP 维度风控：B 站首页 200，视频页与 view API 一律 412。
+# 代理只作用于 yt-dlp，AI 请求与前端都不经过它。
+# YTDL_PROXY=http://user:pass@host:port
+# docker compose 部署：cookies 放 backend/cookies/，这里填 /app/cookies/bilibili.txt
+# YTDL_COOKIES_FILE=/app/cookies/bilibili.txt
 ```
 
 ### 4.3 提供商配置
@@ -734,9 +743,27 @@ compose 部署形态下，宿主机巡检的第 6 项管的是宿主机那一份
 
 | 症状                 | 原因                      | 解决                                                                            |
 | ------------------ | ----------------------- | ----------------------------------------------------------------------------- |
-| yt-dlp 调用平台超时      | 国内访问 YouTube/Twitter 困难 | 配置代理：环境变量 `HTTPS_PROXY=http://127.0.0.1:<proxy-port>`                                 |
+| yt-dlp 调用平台超时 / 报「连不上」 | 国内访问 YouTube/Twitter 困难 | 配置代理：环境变量 `YTDL_PROXY=http://127.0.0.1:<proxy-port>`（**不是** `HTTPS_PROXY`：yt-dlp 只认 `proxy` 选项，不读该环境变量） |
 | 平台模型 502 / 超时  | 模型服务端问题          | 重试；检查端点与模型名是否匹配                                                             |
 | Stripe webhook 收不到 | 公网回调不通                  | 用 `stripe listen --forward-to http://127.0.0.1:8000/api/payment/webhook` 本地测试 |
+
+
+### 9.3.1 出站可达性（实测 2026-11-04）
+
+数据来自现部署实例 `42.193.183.187`（腾讯云广州，容器内发起）：
+
+| 目标                | 实测结果                                                              | 处置                          |
+| ------------------ | --------------------------------------------------------------- | --------------------------- |
+| B 站（视频页 + view API） | HTTP 412（首页 200）                                            | 出口 IP 被按 IP 维度风控 → 配 `YTDL_PROXY` 或 `YTDL_COOKIES_FILE` |
+| YouTube / TikTok   | `Network is unreachable`（无出墙线路）                                 | 不可用；要支持必须换有出墙线路的出口                    |
+| 抖音                | 站点 200；仓库用自有解析器 `backend/douyin.py`，不经 yt-dlp                    | 可用                         |
+| 腾讯视频            | yt-dlp 抽取成功（extractor `vqq-video`）                              | 可用                         |
+| 优酷 / 爱奇艺 / 微博 / 快手 / 小红书 / 西瓜 | 站点首页 200（**未**逐个验证取流）                                | 大概率可用，个案需实测          |
+
+两台其它腾讯云广州机器（`42.194.251.211`、`119.29.52.111`）实测同样是 B 站 412 ——
+说明这是**腾讯云广州 IP 段**的判定，不是单台机器的偶发。
+
+因此本服务在境内部署时的实际口径：**境内平台可用，B 站需换出口，境外平台不可达。**
 
 
 ### 9.4 数据类

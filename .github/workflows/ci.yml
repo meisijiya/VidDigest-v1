@@ -1,12 +1,8 @@
 name: CI
 
-# 触发条件：推 master 与所有 PR 都跑。
-# 门禁的真相在 init.sh 里，这个工作流只做一件事：在干净的 Linux 机器上把它跑一遍。
+# 已归档（2026-11-08）：不再随 push / PR 自动跑，只保留手动触发。
+# 门禁的真相仍在 init.sh 里，本工作流只是把它在干净的 Linux 机器上跑一遍。
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
   workflow_dispatch:
 
 permissions:

@@ -1,3 +1,6 @@
+> **Archived (2026-11-08).** The live service is shut down; this repo is a read-only baseline.
+> The successor project is [meisijiya/VidDigest](https://github.com/meisijiya/VidDigest).
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/VidDigest-AI%20视频理解与下载平台-7c3aed?style=for-the-badge&logo=github">
@@ -170,6 +173,12 @@ docker compose down                       # stop and remove the containers
 
 Audio-only downloads ship the platform's **native audio containers** (e.g. m4a / webm-opus /
 mp3); nothing is transcoded.
+
+> **Deployment scope:** parsing goes through the server's own egress. On a machine inside
+> mainland China, domestic platforms (Douyin, Tencent Video, …) work; **Bilibili is
+> risk-controlled by exit IP and answers 412** — set `YTDL_PROXY` or `YTDL_COOKIES_FILE`;
+> overseas platforms (YouTube, …) are unreachable without an outbound route. Measured
+> numbers: [OPERATIONS §9.3.1](docs/OPERATIONS.md#931-出站可达性实测-2026-11-04).
 
 ### AI summary
 

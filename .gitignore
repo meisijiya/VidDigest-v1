@@ -58,6 +58,9 @@ data/
 *.sqlite
 *.log
 
+# yt-dlp 的 cookies 文件（含登录态凭据，等同口令）
+backend/cookies/
+
 # 临时文件
 *.tmp
 *.bak

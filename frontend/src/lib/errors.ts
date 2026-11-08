@@ -123,6 +123,38 @@ function looksLikeNetwork(err: unknown): boolean {
 }
 
 /**
+ * 平台拦住了**这台服务器的出口**：按 IP 维度风控，或视频本身在境外。
+ *
+ * 为什么要单独分一类：症状看着像「链接坏了」，其实不是。机房 IP 段被
+ * B 站按 IP 风控时，视频页与 view API 一律 412，换视频、换 UA、重试都没用；
+ * 视频在平台所在地区之外时也是这一类。落到「换个链接试试」那一档，
+ * 用户会一直换链接、白等——提示必须说清「不是链接的问题」。
+ *
+ * 判据只取**出口维度**的信号（412 / 反爬验证 / 地区限制），
+ * 不取 403 这种通用状态码：同一个 403 也可能只是单个视频被删。
+ */
+function looksLikeEgressBlocked(err: unknown): boolean {
+  const m = messageOf(err).toLowerCase()
+  if (/http error 412|precondition failed/.test(m)) return true
+  if (/not a bot|sign in to confirm|too many requests from/.test(m)) return true
+  if (/not available in your country|not available in your region|geo.?restricted|geo.?block/.test(m)) return true
+  return false
+}
+
+/**
+ * 服务器连不上这个平台：平台在境外，而这台部署没有出墙线路。
+ *
+ * 同样不能落到「连不上服务器」那一档——那说的是用户自己的网络，
+ * 而这里断的是服务器到平台那一段。
+ */
+function looksLikePlatformUnreachable(err: unknown): boolean {
+  const m = messageOf(err).toLowerCase()
+  return /network is unreachable|no route to host|name or service not known|temporary failure in name resolution/.test(
+    m,
+  )
+}
+
+/**
  * 返回统一弹窗需要的 { title, message, hint }。
  * hint 是「用户下一步该做什么」——这是分类的真正目的。
  */
@@ -134,6 +166,28 @@ export interface ErrorPresentation {
 
 export function classifyError(err: unknown, action: 'parse' | 'download' | 'payment' = 'parse'): ErrorPresentation {
   const message = messageOf(err)
+
+  // 出口维度的拦截必须排在「链接不对」之前：「Video unavailable ... not
+  // available in your country」里也有 "video unavailable"，先判链接就会把
+  // 「这个平台在境外/这台机器被风控」说成「你链接贴错了」。
+  if (looksLikeEgressBlocked(err)) {
+    return {
+      title: '平台拦住了这台服务器的出口',
+      message: message,
+      hint:
+        '这不是你的链接有问题：当前部署的出口 IP 被平台按 IP 维度风控' +
+        '（常见症状是 B 站视频页 412、海外平台提示验证）。换个视频也一样。' +
+        '要用这些平台，需要管理员换一个出口（代理），或者在本地解析。',
+    }
+  }
+
+  if (looksLikePlatformUnreachable(err)) {
+    return {
+      title: '服务器连不上这个平台',
+      message: message,
+      hint: '这个平台在境外，而这台部署没有出墙线路——不是你的网络，也不是链接的问题。' + '境内平台不受影响。',
+    }
+  }
 
   if (looksLikeBadLink(err)) {
     return {
